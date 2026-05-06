@@ -1075,3 +1075,18 @@ SAP_QAS_PASS=********
 ```json
 {"tool": "sap_health_check", "arguments": {"destination": "DEV", "profile": "standard"}}
 ```
+
+---
+
+## Snapshot offline — paginación robusta
+
+`sapmcp-snapshot` pagina `RFC_READ_TABLE` con `ROWSKIPS` y `ROWCOUNT`, avanzando siempre `ROWSKIPS` por el número real de filas recibidas. No considera fin de tabla una página corta, porque SAP puede devolver menos filas que `--page-size` por límites internos de buffer.
+
+Criterios de parada:
+
+- `empty`: página vacía; fin normal de tabla.
+- `stagnant`: la paginación no progresa o el SDK devuelve una página exacta repetida; se aborta con `warning` para evitar bucle infinito.
+- `duplicate`: la página solo contiene filas ya devueltas en la página anterior; se aborta con `warning`.
+- `max_pages`: se alcanzó el límite operativo `--max-pages`.
+
+El resultado en memoria de `build_snapshot()` incluye `pagination`, por tabla, con `pages`, `rows` y `stopped_by`. El fichero `catalog-{SID}.json.gz` mantiene el formato de catálogo offline existente.

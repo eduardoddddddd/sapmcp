@@ -4,6 +4,7 @@ import argparse
 import fnmatch
 import gzip
 import json
+import logging
 import os
 import re
 import sys
@@ -15,6 +16,8 @@ from .audit import sapmcp_home
 from .config import SafetyPolicy, SapConnectionConfig
 from .sap_rfc import SapRFCConnector
 
+logger = logging.getLogger(__name__)
+
 SNAPSHOT_VERSION = 1
 DELIMITER = "\t"
 
@@ -23,6 +26,8 @@ TABLE_SPECS: dict[str, list[str]] = {
     "DD02L": ["TABNAME", "TABCLASS"],
     "DD03L": ["TABNAME", "FIELDNAME", "ROLLNAME", "POSITION", "KEYFLAG", "INTTYPE"],
 }
+
+_LAST_PAGINATION: dict[str, dict[str, int | str]] = {}
 
 
 def snapshot_sid(config: SapConnectionConfig | None = None) -> str:
@@ -59,11 +64,25 @@ def _parse_read_table(result: dict[str, Any]) -> list[dict[str, str]]:
     return rows
 
 
+def _row_signature(row: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    return tuple(sorted(row.items()))
+
+
+def _record_pagination(table_name: str, *, pages: int, rows: int, stopped_by: str) -> None:
+    _LAST_PAGINATION[table_name] = {"pages": pages, "rows": rows, "stopped_by": stopped_by}
+
+
 def read_table_paged(sap: SapRFCConnector, table_name: str, fields: list[str], *, page_size: int = 500, max_pages: int | None = None) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     rowskips = 0
     pages = 0
+    stopped_by = "empty"
+    previous_page: list[dict[str, str]] | None = None
+    previous_rowskips_start: int | None = None
+    repeated_rowskips_streak = 0
+    logger.info("Starting RFC_READ_TABLE pagination for %s: pages=0 rows=0", table_name)
     while True:
+        rowskips_start = rowskips
         result = sap.call_function(
             "RFC_READ_TABLE",
             import_params={
@@ -81,13 +100,60 @@ def read_table_paged(sap: SapRFCConnector, table_name: str, fields: list[str], *
             },
         )
         page = _parse_read_table(result)
-        rows.extend(page)
         pages += 1
-        if len(page) < page_size:
+
+        if not page:
+            stopped_by = "empty"
             break
+
+        if rowskips_start == previous_rowskips_start:
+            repeated_rowskips_streak += 1
+        else:
+            repeated_rowskips_streak = 1
+        if repeated_rowskips_streak >= 2:
+            stopped_by = "stagnant"
+            logger.warning(
+                "Aborting RFC_READ_TABLE pagination for %s: ROWSKIPS did not advance (rowskips=%s, pages=%s, rows=%s)",
+                table_name,
+                rowskips_start,
+                pages,
+                len(rows),
+            )
+            break
+
+        if previous_page is not None and page == previous_page:
+            stopped_by = "stagnant"
+            logger.warning(
+                "Aborting RFC_READ_TABLE pagination for %s: duplicate page indicates no effective ROWSKIPS progress (rowskips=%s, pages=%s, rows=%s)",
+                table_name,
+                rowskips_start,
+                pages,
+                len(rows),
+            )
+            break
+
+        if previous_page is not None:
+            previous_signatures = {_row_signature(row) for row in previous_page}
+            if all(_row_signature(row) in previous_signatures for row in page):
+                stopped_by = "duplicate"
+                logger.warning(
+                    "Aborting RFC_READ_TABLE pagination for %s: page only contains rows already returned by the previous page (rowskips=%s, pages=%s, rows=%s)",
+                    table_name,
+                    rowskips_start,
+                    pages,
+                    len(rows),
+                )
+                break
+
+        rows.extend(page)
         if max_pages is not None and pages >= max_pages:
+            stopped_by = "max_pages"
             break
+        previous_page = page
+        previous_rowskips_start = rowskips_start
         rowskips += len(page)
+    _record_pagination(table_name, pages=pages, rows=len(rows), stopped_by=stopped_by)
+    logger.info("Finished RFC_READ_TABLE pagination for %s: pages=%s rows=%s stopped_by=%s", table_name, pages, len(rows), stopped_by)
     return rows
 
 
@@ -100,19 +166,28 @@ def build_snapshot(*, page_size: int | None = None, max_pages: int | None = None
         max_pages = int(os.environ["SAPMCP_SNAPSHOT_MAX_PAGES"])
     with SapRFCConnector(config) as sap:
         tfdir = read_table_paged(sap, "TFDIR", TABLE_SPECS["TFDIR"], page_size=page_size, max_pages=max_pages)
+        tfdir_pagination = dict(_LAST_PAGINATION.get("TFDIR", {"pages": 0, "rows": len(tfdir), "stopped_by": "empty"}))
         dd02l = read_table_paged(sap, "DD02L", TABLE_SPECS["DD02L"], page_size=page_size, max_pages=max_pages)
+        dd02l_pagination = dict(_LAST_PAGINATION.get("DD02L", {"pages": 0, "rows": len(dd02l), "stopped_by": "empty"}))
         dd03l = read_table_paged(sap, "DD03L", TABLE_SPECS["DD03L"], page_size=page_size, max_pages=max_pages)
+        dd03l_pagination = dict(_LAST_PAGINATION.get("DD03L", {"pages": 0, "rows": len(dd03l), "stopped_by": "empty"}))
     snapshot = {
         "version": SNAPSHOT_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "sid": sid,
         "source": "sapmcp-snapshot",
         "counts": {"rfc": len(tfdir), "tables": len(dd02l), "fields": len(dd03l)},
+        "pagination": {
+            "TFDIR": tfdir_pagination,
+            "DD02L": dd02l_pagination,
+            "DD03L": dd03l_pagination,
+        },
         "rfc": tfdir,
         "tables": dd02l,
         "fields": dd03l,
     }
-    write_snapshot(snapshot, output_path or snapshot_path(sid))
+    persisted_snapshot = {key: value for key, value in snapshot.items() if key != "pagination"}
+    write_snapshot(persisted_snapshot, output_path or snapshot_path(sid))
     return snapshot
 
 
