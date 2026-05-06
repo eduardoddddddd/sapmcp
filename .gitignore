@@ -18,3 +18,16 @@ htmlcov/
 .vscode/
 *.log
 vendor/SAP-RFC-Python-without-PyRFC/.git/
+
+# SAP proprietary SDK/runtime artifacts — install locally, never commit.
+nwrfcsdk/
+sapnwrfc/
+sapnwrfc.ini
+SAPNWRFC*.SAR
+SAPNWRFC*.ZIP
+NWRFC*.SAR
+NWRFC*.ZIP
+libsapnwrfc.*
+libsapucum.*
+libicudecnumber.*
+sapnwrfc.dll

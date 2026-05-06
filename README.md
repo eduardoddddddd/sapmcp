@@ -13,6 +13,7 @@ El proyecto está pensado para trabajo Basis/DevOps diario: conexión multi-sist
 - [Qué resuelve](#qué-resuelve)
 - [Arquitectura resumida](#arquitectura-resumida)
 - [Requisitos](#requisitos)
+- [Librería SAP NetWeaver RFC SDK](#librería-sap-netweaver-rfc-sdk)
 - [Instalación rápida](#instalación-rápida)
 - [Configurar un sistema SAP](#configurar-un-sistema-sap)
 - [Añadir varios sistemas: DEV/QAS/PRD](#añadir-varios-sistemas-devqasprd)
@@ -88,7 +89,7 @@ Módulos principales:
 
 ### SAP NetWeaver RFC SDK
 
-SAP distribuye el SDK bajo licencia. No se incluye en el repositorio.
+SAP distribuye el SDK bajo licencia. **No se incluye en el repositorio y no debe subirse a GitHub**.
 
 Debes tener disponible la librería nativa:
 
@@ -105,6 +106,36 @@ Ejemplos de rutas habituales:
 /opt/sap/nwrfcsdk/lib
 ~/nwrfcsdk/lib
 C:\nwrfcsdk\lib
+```
+
+Guía completa:
+
+- [`docs/instalacion-sap-nwrfc-sdk.md`](docs/instalacion-sap-nwrfc-sdk.md) — descarga oficial, instalación, Docker, verificación y motivos por los que el SDK no se redistribuye con el repo.
+
+---
+
+## Librería SAP NetWeaver RFC SDK
+
+Esta es la pieza crítica del proyecto. `sapmcp` evita `pyrfc`, pero necesita el **SAP NetWeaver RFC SDK** instalado en la máquina donde corre el servidor MCP.
+
+Página oficial de SAP:
+
+- [SAP NetWeaver Remote Function Call (RFC) Software Development Kit](https://support.sap.com/en/product/connectors/nwrfcsdk.html)
+
+SAP indica que la información de descarga de la versión 7.50 está en la **SAP Note 2573790**:
+
+- [SAP Note 2573790](https://me.sap.com/notes/2573790)
+
+Normalmente hace falta un **S-user** con autorización de descarga de software. Por licencia/compliance, el SDK no se vendorizá en este repositorio. Instálalo localmente y configura:
+
+```env
+SAP_NWRFC_LIB_DIR=/opt/sap/nwrfcsdk/lib
+```
+
+o en macOS:
+
+```env
+SAP_NWRFC_LIB_DIR=/usr/local/sap/nwrfcsdk/lib
 ```
 
 ---
@@ -599,6 +630,7 @@ Si el cliente no carga variables de entorno del shell, define `env` explícito o
 ## Documentación adicional
 
 - [`docs/operation.md`](docs/operation.md) — manual básico de instalación, configuración y operación desde cero.
+- [`docs/instalacion-sap-nwrfc-sdk.md`](docs/instalacion-sap-nwrfc-sdk.md) — guía específica para descargar, instalar y verificar el SAP NetWeaver RFC SDK.
 - [`docs/architecture.md`](docs/architecture.md) — arquitectura técnica.
 - [`docs/ejemplos-prompts.md`](docs/ejemplos-prompts.md) — ejemplos oficiales de prompts para demos con Claude/Codex y otros hosts MCP.
 - [`docs/seguridad-y-modelos-locales.md`](docs/seguridad-y-modelos-locales.md) — seguridad operativa y recomendaciones de modelos locales para sapmcp.
