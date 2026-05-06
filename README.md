@@ -18,6 +18,7 @@ El proyecto está pensado para trabajo Basis/DevOps diario: conexión multi-sist
 - [Añadir varios sistemas: DEV/QAS/PRD](#añadir-varios-sistemas-devqasprd)
 - [Configurar usuarios y contraseñas](#configurar-usuarios-y-contraseñas)
 - [Seguridad y modo lectura](#seguridad-y-modo-lectura)
+- [Seguridad con LLMs locales](#seguridad-con-llms-locales)
 - [Herramientas MCP](#herramientas-mcp)
 - [Resources MCP](#resources-mcp)
 - [Prompts MCP](#prompts-mcp)
@@ -357,6 +358,16 @@ y además la tool debe pasar `confirm_dangerous=true`.
 
 ---
 
+## Seguridad con LLMs locales
+
+Para sistemas SAP reales o datos de cliente, consulta la guía específica:
+
+- [`docs/seguridad-y-modelos-locales.md`](docs/seguridad-y-modelos-locales.md) — consideraciones de seguridad, privacidad, modelo de control de `sapmcp` y recomendaciones de modelos locales/open-weight.
+
+La recomendación general es clara: aunque `sapmcp` opere en modo lectura, los datos SAP devueltos por las tools pueden ser sensibles. Para entornos reales, usa LLMs locales, on-prem o plataformas cloud privadas aprobadas; no envíes resultados SAP a LLMs públicos no autorizados.
+
+---
+
 ## Herramientas MCP
 
 ### Sistema y configuración
@@ -590,6 +601,7 @@ Si el cliente no carga variables de entorno del shell, define `env` explícito o
 - [`docs/operation.md`](docs/operation.md) — manual básico de instalación, configuración y operación desde cero.
 - [`docs/architecture.md`](docs/architecture.md) — arquitectura técnica.
 - [`docs/ejemplos-prompts.md`](docs/ejemplos-prompts.md) — ejemplos oficiales de prompts para demos con Claude/Codex y otros hosts MCP.
+- [`docs/seguridad-y-modelos-locales.md`](docs/seguridad-y-modelos-locales.md) — seguridad operativa y recomendaciones de modelos locales para sapmcp.
 - [`docs/sapmcp-abap-docker-validation-2026-05-06.md`](docs/sapmcp-abap-docker-validation-2026-05-06.md) — validación contra ABAP Docker.
 - [`docs/sapmcp-abap-docker-validation-fase8-20260506.md`](docs/sapmcp-abap-docker-validation-fase8-20260506.md) — validación ampliada de multi-destination, Basis, health check, SafetyPolicy y snapshot.
 
