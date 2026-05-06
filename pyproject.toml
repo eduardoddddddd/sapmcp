@@ -1,0 +1,29 @@
+[project]
+name = "sapmcp"
+version = "0.1.0"
+description = "MCP server para SAP ECC/S/4HANA vía llamadas RFC sin PyRFC, usando SAP NetWeaver RFC SDK."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Eduardo Arias Bravo" }]
+dependencies = [
+  "mcp>=1.8.0",
+  "python-dotenv>=1.0.1",
+  "pydantic>=2.7.0",
+]
+
+[project.scripts]
+sapmcp = "sapmcp.server:main"
+sapmcp-credentials = "sapmcp.credentials:main"
+sapmcp-snapshot = "sapmcp.snapshot:main"
+
+[project.optional-dependencies]
+keyring = ["keyring>=24"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
