@@ -66,6 +66,13 @@ def _function_missing(exc: BaseException) -> bool:
     return "RFCGETFUNCTIONDESC" in text or "RFC_GET_FUNCTION_DESC" in text or "FUNCTION_NOT_FOUND" in text or "FU_NOT_FOUND" in text or "NOT_FOUND" in text
 
 
+def _no_data(exc: BaseException) -> bool:
+    if not isinstance(exc, SapRFCError):
+        return False
+    text = f"{exc.key} {exc.message}".upper()
+    return "E_WITHOUT_DATA" in text or "NO_DATA" in text
+
+
 def _unavailable(function_name: str, exc: BaseException | str) -> dict[str, Any]:
     reason = exc if isinstance(exc, str) else str(exc)
     return {"available": False, "function": function_name, "reason": reason}
@@ -94,23 +101,30 @@ def _call(sap: Any, function_name: str, **kwargs: Any) -> dict[str, Any]:
 
 
 def _read_table(sap: Any, table: str, fields: list[str], where: list[str] | None = None, *, rowcount: int = 200, rowskips: int = 0) -> list[dict[str, str]]:
-    result = _call(
-        sap,
-        "RFC_READ_TABLE",
-        import_params={
-            "QUERY_TABLE": table.upper(),
-            "DELIMITER": "\t",
-            "NO_DATA": "",
-            "ROWSKIPS": rowskips,
-            "ROWCOUNT": rowcount,
-        },
-        input_tables={
-            "FIELDS": [{"FIELDNAME": field.upper()} for field in fields],
-            "OPTIONS": [{"TEXT": text} for text in (where or [])],
-        },
-        output_tables=["FIELDS", "DATA"],
-        table_fields={"FIELDS": ["FIELDNAME"], "DATA": ["WA"]},
-    )
+    try:
+        result = _call(
+            sap,
+            "RFC_READ_TABLE",
+            import_params={
+                "QUERY_TABLE": table.upper(),
+                "DELIMITER": "\t",
+                "NO_DATA": "",
+                "ROWSKIPS": rowskips,
+                "ROWCOUNT": rowcount,
+            },
+            input_tables={
+                "FIELDS": [{"FIELDNAME": field.upper()} for field in fields],
+                "OPTIONS": [{"TEXT": text} for text in (where or [])],
+            },
+            output_tables=["FIELDS", "DATA"],
+            table_fields={"FIELDS": ["FIELDNAME"], "DATA": ["WA"]},
+        )
+    except SapRFCError as exc:
+        # RFC_READ_TABLE raises E_WITHOUT_DATA for valid empty selections/tables.
+        # Basis smoke tools should report count=0 instead of failing the whole tool.
+        if _no_data(exc):
+            return []
+        raise
     metadata = _rows(result, "FIELDS")
     names = [_first(row, "FIELDNAME") for row in metadata] or fields
     parsed: list[dict[str, str]] = []
@@ -256,11 +270,9 @@ def sap_get_locks(table: str | None = None, user: str | None = None, destination
                 sap,
                 "ENQUEUE_READ",
                 import_params={"GNAME": (table or "").upper(), "GUNAME": (user or "").upper()},
-                output_tables=["ENQ", "LOCKS", "ET_ENQ"],
+                output_tables=["ENQ"],
                 table_fields={
                     "ENQ": ["GNAME", "GARG", "GUNAME", "GTARG", "GTCODE", "GTDATE", "GTTIME"],
-                    "LOCKS": ["GNAME", "GARG", "GUNAME", "GTARG", "GTCODE", "GTDATE", "GTTIME"],
-                    "ET_ENQ": ["GNAME", "GARG", "GUNAME", "GTARG", "GTCODE", "GTDATE", "GTTIME"],
                 },
             )
         except LookupError as exc:
@@ -286,15 +298,15 @@ def sap_get_locks(table: str | None = None, user: str | None = None, destination
 
 def _wp_row(row: dict[str, Any], server: str = "") -> dict[str, Any]:
     return {
-        "server": server or _first(row, "SERVER", "INSTANCE", "HOST"),
+        "server": server or _first(row, "SERVER", "INSTANCE", "HOST", "WP_SERVER"),
         "numero": _first(row, "WP_NO", "NO", "NUMBER", "WP_INDEX"),
         "tipo": _first(row, "WP_TYP", "TYPE", "WPTYPE"),
         "status": _first(row, "WP_STATUS", "STATUS", "STATE"),
-        "usuario": _first(row, "USER", "UNAME", "USERNAME"),
-        "mandante": _first(row, "CLIENT", "MANDT"),
-        "programa": _first(row, "PROGRAM", "REPORT", "PROG"),
-        "tiempo": _first(row, "TIME", "ELTIME", "RUNTIME"),
-        "tabla": _first(row, "TABLE", "TABNAME"),
+        "usuario": _first(row, "USER", "UNAME", "USERNAME", "WP_BNAME"),
+        "mandante": _first(row, "CLIENT", "MANDT", "WP_MANDT"),
+        "programa": _first(row, "PROGRAM", "REPORT", "PROG", "WP_REPORT"),
+        "tiempo": _first(row, "TIME", "ELTIME", "RUNTIME", "WP_ELTIME"),
+        "tabla": _first(row, "TABLE", "TABNAME", "WP_TABLE"),
     }
 
 
@@ -306,7 +318,7 @@ def sap_get_workprocesses(server: str | None = None, destination: str | None = N
         try:
             servers = [server] if server else []
             if not servers:
-                result = _call(sap, "TH_SERVER_LIST", output_tables=["LIST", "SERVERS"], table_fields={"LIST": ["NAME", "HOST"], "SERVERS": ["NAME", "HOST"]})
+                result = _call(sap, "TH_SERVER_LIST", output_tables=["LIST"], table_fields={"LIST": ["NAME", "HOST"]})
                 servers = [_first(row, "NAME", "SERVER", "HOST") for row in _rows(result, "LIST", "SERVERS") if _first(row, "NAME", "SERVER", "HOST")]
             if not servers:
                 servers = [""]
@@ -314,9 +326,9 @@ def sap_get_workprocesses(server: str | None = None, destination: str | None = N
                 result = _call(
                     sap,
                     "TH_WPINFO",
-                    import_params={"SERVER_NAME": srv or ""},
-                    output_tables=["WPLIST", "WPINFO", "LIST"],
-                    table_fields={"WPLIST": ["WP_NO", "WP_TYP", "WP_STATUS", "USER", "CLIENT", "PROGRAM", "TIME", "TABLE"], "WPINFO": ["WP_NO", "WP_TYP", "WP_STATUS", "USER", "CLIENT", "PROGRAM", "TIME", "TABLE"], "LIST": ["WP_NO", "WP_TYP", "WP_STATUS", "USER", "CLIENT", "PROGRAM", "TIME", "TABLE"]},
+                    import_params={"SRVNAME": srv or ""},
+                    output_tables=["WPLIST"],
+                    table_fields={"WPLIST": ["WP_NO", "WP_TYP", "WP_STATUS", "WP_BNAME", "WP_MANDT", "WP_REPORT", "WP_ELTIME", "WP_TABLE"]},
                 )
                 processes.extend(_wp_row(row, srv or "") for row in _rows(result, "WPLIST", "WPINFO", "LIST"))
         except LookupError as exc:
@@ -413,24 +425,32 @@ def sap_get_jobs(top_n: int = 50, status: str | None = None, since_days: int = 1
     """Read SAP background jobs via BAPI_XBP_JOB_SELECT."""
     wanted = status.upper().strip() if status else None
     since = (datetime.now() - timedelta(days=max(0, int(since_days)))).strftime("%Y%m%d")
+    source = "BAPI_XBP_JOB_SELECT"
     with _connector(destination) as sap:
         try:
             result = _call(
                 sap,
                 "BAPI_XBP_JOB_SELECT",
-                import_params={"FROM_DATE": since, "JOB_SELECT_PARAM": "*", "STATUS": wanted or ""},
-                output_tables=["JOBLIST", "JOBS", "SELECTED_JOBS", "STEPS"],
+                import_params={"EXTERNAL_USER_NAME": SapConnectionConfig.from_destination(destination).params.get("USER", "")},
+                output_tables=["JOB_HEAD"],
                 table_fields={
-                    "JOBLIST": ["JOBNAME", "JOBCOUNT", "STATUS", "SDLSTRTDT", "SDLSTRTTM", "ENDDATE", "ENDTIME", "USERNAME", "RUNTIME", "STEPS"],
-                    "JOBS": ["JOBNAME", "JOBCOUNT", "STATUS", "SDLSTRTDT", "SDLSTRTTM", "ENDDATE", "ENDTIME", "USERNAME", "RUNTIME", "STEPS"],
-                    "SELECTED_JOBS": ["JOBNAME", "JOBCOUNT", "STATUS", "SDLSTRTDT", "SDLSTRTTM", "ENDDATE", "ENDTIME", "USERNAME", "RUNTIME", "STEPS"],
-                    "STEPS": ["JOBNAME", "JOBCOUNT", "STEPCOUNT"],
+                    "JOB_HEAD": ["JOBNAME", "JOBCOUNT", "STATUS", "SDLSTRTDT", "SDLSTRTTM", "ENDDATE", "ENDTIME", "SDLUNAME", "STEPCOUNT"],
                 },
             )
         except LookupError as exc:
             return _unavailable("BAPI_XBP_JOB_SELECT", exc)
+        except SapRFCError:
+            # Some Basis releases require a structured JOB_SELECT_PARAM import that
+            # this lightweight ctypes bridge does not fill yet. Keep the tool useful
+            # in read-only mode by falling back to the transparent job header table.
+            source = "TBTCO"
+            where = [f"SDLSTRTDT >= '{since}'"]
+            if wanted:
+                where.append(f"AND STATUS = '{wanted}'")
+            rows = _read_table(sap, "TBTCO", ["JOBNAME", "JOBCOUNT", "STATUS", "SDLSTRTDT", "SDLSTRTTM", "ENDDATE", "ENDTIME", "SDLUNAME"], where, rowcount=SafetyPolicy.from_env().max_rows)
+            result = {"JOB_HEAD": rows}
     jobs = []
-    for row in _rows(result, "JOBLIST", "JOBS", "SELECTED_JOBS"):
+    for row in _rows(result, "JOB_HEAD", "JOBLIST", "JOBS", "SELECTED_JOBS"):
         item = {
             "jobname": _first(row, "JOBNAME"),
             "jobcount": _first(row, "JOBCOUNT"),
@@ -446,7 +466,7 @@ def sap_get_jobs(top_n: int = 50, status: str | None = None, since_days: int = 1
         jobs = [job for job in jobs if job["status"].upper() == wanted]
     jobs.sort(key=lambda job: (job.get("start", ""), job.get("jobname", "")), reverse=True)
     top = max(0, int(top_n))
-    return {"available": True, "destination": _destination_name(destination), "since": since, "jobs": jobs[:top], "count": len(jobs[:top])}
+    return {"available": True, "destination": _destination_name(destination), "source": source, "since": since, "jobs": jobs[:top], "count": len(jobs[:top])}
 
 
 @audited("sap_get_user_audit")
@@ -459,9 +479,12 @@ def sap_get_user_audit(user: str, destination: str | None = None) -> dict[str, A
                 sap,
                 "BAPI_USER_GET_DETAIL",
                 import_params={"USERNAME": username},
-                output_params=["ADDRESS", "LOGONDATA", "DEFAULTS"],
                 output_tables=["PROFILES", "ACTIVITYGROUPS", "RETURN"],
-                table_fields={"PROFILES": ["BAPIPROF", "PROFILE"], "ACTIVITYGROUPS": ["AGR_NAME", "ROLE"], "RETURN": ["TYPE", "MESSAGE"]},
+                table_fields={
+                    "PROFILES": ["BAPIPROF", "BAPIPTEXT", "BAPITYPE", "BAPIAKTPS"],
+                    "ACTIVITYGROUPS": ["AGR_NAME", "AGR_TEXT", "FROM_DAT", "TO_DAT"],
+                    "RETURN": ["TYPE", "MESSAGE"],
+                },
             )
         except LookupError as exc:
             return _unavailable("BAPI_USER_GET_DETAIL", exc)

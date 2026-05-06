@@ -215,11 +215,9 @@ def _active_users_check(destination: str | None) -> dict[str, Any]:
             result = _call(
                 sap,
                 "TH_USER_LIST",
-                output_tables=["USRLIST", "LIST", "USERS"],
+                output_tables=["USRLIST"],
                 table_fields={
                     "USRLIST": ["BNAME", "MANDT", "TERM", "TCODE"],
-                    "LIST": ["BNAME", "MANDT", "TERM", "TCODE"],
-                    "USERS": ["BNAME", "MANDT", "TERM", "TCODE"],
                 },
             )
         users = result.get("USRLIST") or result.get("LIST") or result.get("USERS") or []
@@ -231,7 +229,7 @@ def _active_users_check(destination: str | None) -> dict[str, Any]:
 def _t000_check(destination: str | None) -> dict[str, Any]:
     def run() -> dict[str, Any]:
         with _connector(destination) as sap:
-            rows = _read_table(sap, "T000", ["MANDT", "MTEXT", "CCCATEGORY"], rowcount=50)
+            rows = _read_table(sap, "T000", ["MANDT", "MTEXT"], rowcount=50)
         return _check("clients_t000", "ok", {"count": len(rows), "clients": rows}, None)
 
     return _timed_check("clients_t000", run)
@@ -241,7 +239,7 @@ def _server_list_check(destination: str | None) -> dict[str, Any]:
     def run() -> dict[str, Any]:
         SafetyPolicy.from_env().assert_allowed("TH_SERVER_LIST")
         with _connector(destination) as sap:
-            result = _call(sap, "TH_SERVER_LIST", output_tables=["LIST", "SERVERS"], table_fields={"LIST": ["NAME", "HOST"], "SERVERS": ["NAME", "HOST"]})
+            result = _call(sap, "TH_SERVER_LIST", output_tables=["LIST"], table_fields={"LIST": ["NAME", "HOST"]})
         servers = result.get("LIST") or result.get("SERVERS") or []
         return _check("servers", "ok", {"count": len(servers), "servers": servers}, None)
 

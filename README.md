@@ -21,6 +21,7 @@ El proyecto está pensado para trabajo Basis/DevOps diario: conexión multi-sist
 - [Herramientas MCP](#herramientas-mcp)
 - [Resources MCP](#resources-mcp)
 - [Prompts MCP](#prompts-mcp)
+- [Ejemplos de prompts de demo](#ejemplos-de-prompts-de-demo)
 - [Health check](#health-check)
 - [Auditoría](#auditoría)
 - [Snapshot offline](#snapshot-offline)
@@ -39,6 +40,7 @@ Con `sapmcp`, un asistente LLM puede:
 4. Consultar resources cacheables como interfaces RFC, esquemas DDIC, sistema activo y destinos configurados.
 5. Ejecutar RFCs genéricas bajo una política de seguridad explícita.
 6. Registrar auditoría local sin contraseñas ni payload sensible.
+7. Preparar demos reproducibles para Claude Desktop, Codex u otros hosts MCP, con prompts funcionales, Basis y ABAP.
 
 El servidor **no incluye un LLM propio**. Expone capacidades MCP para que el LLM anfitrión las use.
 
@@ -445,6 +447,21 @@ Los prompts son playbooks; no ejecutan acciones por sí mismos.
 
 ---
 
+## Ejemplos de prompts de demo
+
+El repositorio incluye una guía oficial de prompts listos para copiar y pegar:
+
+- [`docs/ejemplos-prompts.md`](docs/ejemplos-prompts.md) — prompts endurecidos para demos funcionales, Basis, ABAP y management.
+
+La guía está pensada para demostrar en directo la propuesta de valor de `sapmcp`:
+
+- SAP como interfaz conversacional mediante MCP.
+- Operación segura en modo `SAPMCP_READ_ONLY=true`.
+- Cruce de tablas y RFCs estándar sin depender de `pyrfc`.
+- Preflight, fallbacks y límites de lectura para evitar demos frágiles.
+
+---
+
 ## Health check
 
 `sap_health_check` orquesta varias lecturas Basis. En perfiles `standard` y `deep`, usa paralelización con `ThreadPoolExecutor(max_workers=4)`, pero **cada check abre su propia conexión RFC**.
@@ -572,7 +589,9 @@ Si el cliente no carga variables de entorno del shell, define `env` explícito o
 
 - [`docs/operation.md`](docs/operation.md) — manual básico de instalación, configuración y operación desde cero.
 - [`docs/architecture.md`](docs/architecture.md) — arquitectura técnica.
+- [`docs/ejemplos-prompts.md`](docs/ejemplos-prompts.md) — ejemplos oficiales de prompts para demos con Claude/Codex y otros hosts MCP.
 - [`docs/sapmcp-abap-docker-validation-2026-05-06.md`](docs/sapmcp-abap-docker-validation-2026-05-06.md) — validación contra ABAP Docker.
+- [`docs/sapmcp-abap-docker-validation-fase8-20260506.md`](docs/sapmcp-abap-docker-validation-fase8-20260506.md) — validación ampliada de multi-destination, Basis, health check, SafetyPolicy y snapshot.
 
 ---
 
