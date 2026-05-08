@@ -422,6 +422,11 @@ La recomendación general es clara: aunque `sapmcp` opere en modo lectura, los d
 | `sap_rfc_call(function_name, ..., destination=None)` | Llamada RFC genérica con import params, tablas y salidas explícitas. |
 | `sap_search_rfc(prefix, limit=50, destination=None)` | Busca módulos RFC por prefijo en `TFDIR`. |
 
+> `sap_read_table(where=...)` se conserva por compatibilidad como modo avanzado.
+> Las tools internas de Basis/catalogo construyen `OPTIONS` con helpers seguros
+> para campos/literales; para uso normal evita WHERE libre y prefiere tools
+> específicas o filtros construidos por el servidor.
+
 ### Operación Basis
 
 | Tool | Transacción mental | Uso |
@@ -659,5 +664,5 @@ pytest -q
 Resultado esperado actual:
 
 ```text
-35 passed
+65 passed
 ```

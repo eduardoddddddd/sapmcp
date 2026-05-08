@@ -193,3 +193,18 @@ def test_rfc_catalog_resource_uses_read_table_and_policy_limit(monkeypatch):
     assert catalog["uri"] == "sap://catalog/rfc?prefix=BAPI_USER"
     assert catalog["limit"] == 10
     assert catalog["functions"] == ["BAPI_USER_GET_DETAIL"]
+
+
+def test_rfc_catalog_prefix_is_escaped_as_literal(monkeypatch):
+    seen_kwargs: list[dict] = []
+
+    class CaptureCatalogConnector(FakeSDKConnector):
+        def call_function(self, function_name, **kwargs):
+            seen_kwargs.append(kwargs)
+            return super().call_function(function_name, **kwargs)
+
+    monkeypatch.setattr(resources, "_connector", lambda destination=None: CaptureCatalogConnector([]))
+
+    resources.search_rfc_catalog("' OR '1'='1", limit=1)
+
+    assert seen_kwargs[0]["input_tables"]["OPTIONS"] == [{"TEXT": "FUNCNAME LIKE ''' OR ''1''=''1%'"}]

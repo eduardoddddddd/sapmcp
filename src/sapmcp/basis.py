@@ -6,6 +6,16 @@ from typing import Any, Literal
 from . import _connector
 from .audit import audited
 from .config import SafetyPolicy, SapConnectionConfig
+from .read_table import (
+    build_rfc_read_table_request,
+    normalize_job_status,
+    normalize_sap_date,
+    normalize_sap_user,
+    normalize_table_name,
+    sap_eq,
+    sap_ge,
+    sap_le,
+)
 from .sap_rfc import SapRFCError
 
 
@@ -22,8 +32,8 @@ def _today() -> str:
 
 
 def _date_range(date_from: str | None = None, date_to: str | None = None) -> tuple[str, str]:
-    start = (date_from or _today()).strip()
-    end = (date_to or start).strip()
+    start = normalize_sap_date(date_from or _today(), name="date_from")
+    end = normalize_sap_date(date_to or start, name="date_to")
     return start, end
 
 
@@ -101,23 +111,20 @@ def _call(sap: Any, function_name: str, **kwargs: Any) -> dict[str, Any]:
 
 
 def _read_table(sap: Any, table: str, fields: list[str], where: list[str] | None = None, *, rowcount: int = 200, rowskips: int = 0) -> list[dict[str, str]]:
+    request = build_rfc_read_table_request(
+        table,
+        fields,
+        where,
+        rowcount=rowcount,
+        rowskips=rowskips,
+        delimiter="\t",
+        include_field_metadata=False,
+    )
     try:
         result = _call(
             sap,
             "RFC_READ_TABLE",
-            import_params={
-                "QUERY_TABLE": table.upper(),
-                "DELIMITER": "\t",
-                "NO_DATA": "",
-                "ROWSKIPS": rowskips,
-                "ROWCOUNT": rowcount,
-            },
-            input_tables={
-                "FIELDS": [{"FIELDNAME": field.upper()} for field in fields],
-                "OPTIONS": [{"TEXT": text} for text in (where or [])],
-            },
-            output_tables=["FIELDS", "DATA"],
-            table_fields={"FIELDS": ["FIELDNAME"], "DATA": ["WA"]},
+            **request.call_kwargs(),
         )
     except SapRFCError as exc:
         # RFC_READ_TABLE raises E_WITHOUT_DATA for valid empty selections/tables.
@@ -126,7 +133,7 @@ def _read_table(sap: Any, table: str, fields: list[str], where: list[str] | None
             return []
         raise
     metadata = _rows(result, "FIELDS")
-    names = [_first(row, "FIELDNAME") for row in metadata] or fields
+    names = [_first(row, "FIELDNAME") for row in metadata] or request.fields
     parsed: list[dict[str, str]] = []
     for raw in _rows(result, "DATA"):
         parts = _first(raw, "WA").split("\t")
@@ -170,13 +177,14 @@ def sap_get_short_dumps(
 ) -> dict[str, Any]:
     """Return ABAP short dumps via RFC_GET_SHORT_DUMP_LIST or SNAP fallback."""
     start, end = _date_range(date_from, date_to)
+    username = normalize_sap_user(user)
     with _connector(destination) as sap:
         if _has_function(sap, "RFC_GET_SHORT_DUMP_LIST"):
             try:
                 result = _call(
                     sap,
                     "RFC_GET_SHORT_DUMP_LIST",
-                    import_params={"DATE_FROM": start, "DATE_TO": end, "UNAME": user or ""},
+                    import_params={"DATE_FROM": start, "DATE_TO": end, "UNAME": username},
                     output_tables=["DUMPS", "DUMP_LIST", "SNAPLIST", "ET_DUMPS"],
                     table_fields={
                         "DUMPS": ["DATUM", "UZEIT", "UNAME", "PROG", "AHOST", "T100MSG", "LAST"],
@@ -194,16 +202,16 @@ def sap_get_short_dumps(
             dumps = []
             source = "SNAP"
         if source == "SNAP":
-            where = [f"DATUM >= '{start}'", f"AND DATUM <= '{end}'"]
-            if user:
-                where.append(f"AND UNAME = '{user.upper()}'")
+            where = [sap_ge("DATUM", start), sap_le("DATUM", end, connector="AND")]
+            if username:
+                where.append(sap_eq("UNAME", username, connector="AND"))
             try:
                 rows = _read_table(sap, "SNAP", ["DATUM", "UZEIT", "UNAME", "PROG", "AHOST", "T100MSG"], where)
             except LookupError as exc:
                 return _unavailable("RFC_GET_SHORT_DUMP_LIST/RFC_READ_TABLE(SNAP)", exc)
             dumps = [_dump_row(row) for row in rows]
-    if user:
-        dumps = [row for row in dumps if row["usuario"].upper() == user.upper()]
+    if username:
+        dumps = [row for row in dumps if row["usuario"].upper() == username]
     _mark_latest(dumps, ("usuario", "programa", "t100msg"))
     dumps.sort(key=lambda row: (row.get("fecha", ""), row.get("hora", "")), reverse=True)
     return {"available": True, "destination": _destination_name(destination), "source": source, "date_from": start, "date_to": end, "dumps": dumps, "count": len(dumps)}
@@ -264,12 +272,14 @@ def sap_get_syslog(
 @audited("sap_get_locks")
 def sap_get_locks(table: str | None = None, user: str | None = None, destination: str | None = None) -> dict[str, Any]:
     """Read SAP enqueue locks via ENQUEUE_READ."""
+    table_name = normalize_table_name(table) if table else ""
+    username = normalize_sap_user(user)
     with _connector(destination) as sap:
         try:
             result = _call(
                 sap,
                 "ENQUEUE_READ",
-                import_params={"GNAME": (table or "").upper(), "GUNAME": (user or "").upper()},
+                import_params={"GNAME": table_name, "GUNAME": username},
                 output_tables=["ENQ"],
                 table_fields={
                     "ENQ": ["GNAME", "GARG", "GUNAME", "GTARG", "GTCODE", "GTDATE", "GTTIME"],
@@ -289,10 +299,10 @@ def sap_get_locks(table: str | None = None, user: str | None = None, destination
         }
         for row in _rows(result, "ENQ", "LOCKS", "ET_ENQ")
     ]
-    if table:
-        locks = [row for row in locks if row["gname"].upper() == table.upper()]
-    if user:
-        locks = [row for row in locks if row["guname"].upper() == user.upper()]
+    if table_name:
+        locks = [row for row in locks if row["gname"].upper() == table_name]
+    if username:
+        locks = [row for row in locks if row["guname"].upper() == username]
     return {"available": True, "destination": _destination_name(destination), "locks": locks, "count": len(locks)}
 
 
@@ -339,13 +349,14 @@ def sap_get_workprocesses(server: str | None = None, destination: str | None = N
 @audited("sap_get_update_requests")
 def sap_get_update_requests(status: str | None = None, user: str | None = None, destination: str | None = None) -> dict[str, Any]:
     """Read update requests via BAPI_UPDREQUEST_GETLIST."""
-    wanted = status.upper().strip() if status else None
+    wanted = normalize_job_status(status) or None
+    username = normalize_sap_user(user)
     with _connector(destination) as sap:
         try:
             result = _call(
                 sap,
                 "BAPI_UPDREQUEST_GETLIST",
-                import_params={"STATUS": wanted or "", "USER": (user or "").upper()},
+                import_params={"STATUS": wanted or "", "USER": username},
                 output_tables=["REQUESTS", "UPDREQUESTS", "MODINFO", "MODULES"],
                 table_fields={
                     "REQUESTS": ["USER", "PROGRAM", "DATE", "TIME", "STATUS", "MODULES"],
@@ -369,8 +380,8 @@ def sap_get_update_requests(status: str | None = None, user: str | None = None, 
         requests.append(item)
     if wanted:
         requests = [row for row in requests if row["status"].upper() == wanted]
-    if user:
-        requests = [row for row in requests if row["usuario"].upper() == user.upper()]
+    if username:
+        requests = [row for row in requests if row["usuario"].upper() == username]
     return {"available": True, "destination": _destination_name(destination), "requests": requests, "count": len(requests)}
 
 
@@ -423,7 +434,7 @@ def _job_datetime(row: dict[str, Any], date_names: tuple[str, ...], time_names: 
 @audited("sap_get_jobs")
 def sap_get_jobs(top_n: int = 50, status: str | None = None, since_days: int = 1, destination: str | None = None) -> dict[str, Any]:
     """Read SAP background jobs via BAPI_XBP_JOB_SELECT."""
-    wanted = status.upper().strip() if status else None
+    wanted = normalize_job_status(status) or None
     since = (datetime.now() - timedelta(days=max(0, int(since_days)))).strftime("%Y%m%d")
     source = "BAPI_XBP_JOB_SELECT"
     with _connector(destination) as sap:
@@ -444,9 +455,9 @@ def sap_get_jobs(top_n: int = 50, status: str | None = None, since_days: int = 1
             # this lightweight ctypes bridge does not fill yet. Keep the tool useful
             # in read-only mode by falling back to the transparent job header table.
             source = "TBTCO"
-            where = [f"SDLSTRTDT >= '{since}'"]
+            where = [sap_ge("SDLSTRTDT", since)]
             if wanted:
-                where.append(f"AND STATUS = '{wanted}'")
+                where.append(sap_eq("STATUS", wanted, connector="AND"))
             rows = _read_table(sap, "TBTCO", ["JOBNAME", "JOBCOUNT", "STATUS", "SDLSTRTDT", "SDLSTRTTM", "ENDDATE", "ENDTIME", "SDLUNAME"], where, rowcount=SafetyPolicy.from_env().max_rows)
             result = {"JOB_HEAD": rows}
     jobs = []
@@ -472,7 +483,7 @@ def sap_get_jobs(top_n: int = 50, status: str | None = None, since_days: int = 1
 @audited("sap_get_user_audit")
 def sap_get_user_audit(user: str, destination: str | None = None) -> dict[str, Any]:
     """Combine standard BAPIs and USR02 reads for a read-only user audit."""
-    username = user.upper().strip()
+    username = normalize_sap_user(user, required=True)
     with _connector(destination) as sap:
         try:
             detail = _call(
@@ -495,7 +506,7 @@ def sap_get_user_audit(user: str, destination: str | None = None) -> dict[str, A
             except LookupError:
                 lockstatus = {}
         try:
-            usr02_rows = _read_table(sap, "USR02", ["BNAME", "GLTGV", "GLTGB", "TRDAT", "LTIME", "UFLAG", "LOCNT"], [f"BNAME = '{username}'"], rowcount=1)
+            usr02_rows = _read_table(sap, "USR02", ["BNAME", "GLTGV", "GLTGB", "TRDAT", "LTIME", "UFLAG", "LOCNT"], [sap_eq("BNAME", username)], rowcount=1)
         except LookupError as exc:
             return _unavailable("RFC_READ_TABLE(USR02)", exc)
     usr02 = usr02_rows[0] if usr02_rows else {}

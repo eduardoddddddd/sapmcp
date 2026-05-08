@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from .audit import sapmcp_home
 from .config import SafetyPolicy, SapConnectionConfig
+from .read_table import build_rfc_read_table_request
 from .sap_rfc import SapRFCConnector
 
 logger = logging.getLogger(__name__)
@@ -83,21 +84,17 @@ def read_table_paged(sap: SapRFCConnector, table_name: str, fields: list[str], *
     logger.info("Starting RFC_READ_TABLE pagination for %s: pages=0 rows=0", table_name)
     while True:
         rowskips_start = rowskips
+        request = build_rfc_read_table_request(
+            table_name,
+            fields,
+            rowcount=page_size,
+            rowskips=rowskips,
+            delimiter=DELIMITER,
+            include_field_metadata=True,
+        )
         result = sap.call_function(
             "RFC_READ_TABLE",
-            import_params={
-                "QUERY_TABLE": table_name,
-                "DELIMITER": DELIMITER,
-                "NO_DATA": "",
-                "ROWSKIPS": rowskips,
-                "ROWCOUNT": page_size,
-            },
-            input_tables={"FIELDS": [{"FIELDNAME": field} for field in fields]},
-            output_tables=["FIELDS", "DATA"],
-            table_fields={
-                "FIELDS": ["FIELDNAME", "OFFSET", "LENGTH", "TYPE", "FIELDTEXT"],
-                "DATA": ["WA"],
-            },
+            **request.call_kwargs(),
         )
         page = _parse_read_table(result)
         pages += 1

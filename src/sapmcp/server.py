@@ -21,6 +21,7 @@ from . import prompts as prompt_templates
 from .audit import audited, tail_audit
 from .config import SafetyPolicy, SapConnectionConfig, list_destinations, runtime_status
 from .health import sap_health_check
+from .read_table import build_rfc_read_table_request
 from .resources import (
     describe_rfc_interface,
     get_destinations,
@@ -352,54 +353,49 @@ def sap_read_table(
     """
     Read a SAP transparent table/view via RFC_READ_TABLE with a row limit.
 
-    where is a list of SAP option strings, e.g. ["BUKRS = '1000'", "AND GJAHR = '2026'"].
-    The default delimiter is a tab to reduce collisions with SAP text values. SAP truncates
-    DATA-WA to 512 bytes server-side; for wide tables use a purpose-built Z-RFC/BAPI or
+    `where` is an advanced compatibility escape hatch containing raw SAP OPTION
+    strings, e.g. ["BUKRS = '1000'", "AND GJAHR = '2026'"]. Prefer purpose-built
+    tools/resources that build safe OPTIONS centrally. The default delimiter is a
+    tab to reduce collisions with SAP text values. SAP truncates DATA-WA to 512
+    bytes server-side; for wide tables use a purpose-built Z-RFC/BAPI or
     /BODS/RFC_READ_TABLE2 when available.
     """
     policy = _policy()
     policy.assert_allowed("RFC_READ_TABLE")
     max_rows = policy.max_rows
     effective_rowcount = rowcount if rowcount is not None else max_rows
-    effective_rowcount = min(max(0, int(effective_rowcount)), max_rows)
-
-    input_tables: dict[str, list[dict[str, Any]]] = {}
-    if fields:
-        input_tables["FIELDS"] = [{"FIELDNAME": field.upper()} for field in fields]
-    if where:
-        input_tables["OPTIONS"] = [{"TEXT": condition} for condition in where]
+    request = build_rfc_read_table_request(
+        table_name,
+        fields,
+        where,
+        rowcount=effective_rowcount,
+        rowskips=rowskips,
+        delimiter=delimiter,
+        no_data=no_data,
+        max_rows=max_rows,
+        include_field_metadata=True,
+        advanced_where=True,
+    )
 
     with _connector(destination) as sap:
         result = sap.call_function(
             "RFC_READ_TABLE",
-            import_params={
-                "QUERY_TABLE": table_name.strip().upper(),
-                "DELIMITER": delimiter,
-                "NO_DATA": "X" if no_data else "",
-                "ROWSKIPS": rowskips,
-                "ROWCOUNT": effective_rowcount,
-            },
-            input_tables=input_tables,
-            output_tables=["FIELDS", "DATA"],
-            table_fields={
-                "FIELDS": ["FIELDNAME", "OFFSET", "LENGTH", "TYPE", "FIELDTEXT"],
-                "DATA": ["WA"],
-            },
+            **request.call_kwargs(),
         )
 
     metadata = result.get("FIELDS", [])
-    raw_rows = _limit_rows(result.get("DATA", []), effective_rowcount)
-    selected_fields = [row.get("FIELDNAME", "") for row in metadata] or [field.upper() for field in (fields or [])]
+    raw_rows = _limit_rows(result.get("DATA", []), request.rowcount)
+    selected_fields = [row.get("FIELDNAME", "") for row in metadata] or request.fields
     parsed_rows: list[dict[str, str]] = []
     for raw in raw_rows:
         wa = raw.get("WA", "")
-        parts = wa.split(delimiter) if delimiter else [wa]
+        parts = wa.split(request.delimiter) if request.delimiter else [wa]
         parsed_rows.append({name: parts[index].strip() if index < len(parts) else "" for index, name in enumerate(selected_fields)})
 
     return {
-        "table": table_name.strip().upper(),
+        "table": request.table_name,
         "destination": SapConnectionConfig.from_destination(destination).destination,
-        "rowcount_requested": effective_rowcount,
+        "rowcount_requested": request.rowcount,
         "rows_returned": len(parsed_rows),
         "fields": metadata,
         "rows": parsed_rows,

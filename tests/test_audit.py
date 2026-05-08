@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 
 import pytest
@@ -73,3 +74,18 @@ def test_audited_records_rc_and_error_on_exception():
     assert record["rc"] == 1
     assert record["error_key"] == "ValueError"
     assert record["error_message"] == "boom"
+
+
+def test_audited_concurrent_writes_keep_valid_jsonl():
+    @audited("sap_ping")
+    def fake_tool(index: int):
+        return {"index": index}
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        assert list(executor.map(fake_tool, range(40))) == [{"index": index} for index in range(40)]
+
+    lines = audit_log_path().read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 40
+    records = [json.loads(line) for line in lines]
+    assert {record["tool"] for record in records} == {"sap_ping"}
+    assert {record["function"] for record in records} == {"RFC_PING"}

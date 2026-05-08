@@ -8,6 +8,7 @@ from typing import Any, Callable, TypeVar
 
 from . import _connector
 from .config import DANGEROUS_PATTERNS, READ_ONLY_PATTERNS, SafetyPolicy, SapConnectionConfig, list_destinations
+from .read_table import build_rfc_read_table_request, normalize_table_name, sap_like_prefix
 from .sap_rfc import SapRFCConnector
 
 T = TypeVar("T")
@@ -241,7 +242,7 @@ def _schema_fields(ddif_result: dict[str, Any]) -> list[dict[str, Any]]:
 
 def get_table_schema(name: str, destination: str | None = None) -> dict[str, Any]:
     """Cached `sap://table/{name}/schema` payload."""
-    table_name = name.strip().upper()
+    table_name = normalize_table_name(name)
     config = _destination_config(destination)
 
     def load() -> dict[str, Any]:
@@ -295,6 +296,15 @@ def search_rfc_catalog(prefix: str, limit: int | None = None, destination: str |
     config = _destination_config(destination)
     policy = _policy()
     effective_limit = policy.max_rows if limit is None else min(max(0, int(limit)), policy.max_rows)
+    request = build_rfc_read_table_request(
+        "TFDIR",
+        ["FUNCNAME", "FMODE"],
+        [sap_like_prefix("FUNCNAME", normalized_prefix)],
+        rowcount=effective_limit,
+        rowskips=0,
+        delimiter="\t",
+        include_field_metadata=True,
+    )
     cache_key = f"{_ns(config.destination)}/catalog/rfc?prefix={normalized_prefix}&limit={effective_limit}"
 
     def load() -> dict[str, Any]:
@@ -302,22 +312,7 @@ def search_rfc_catalog(prefix: str, limit: int | None = None, destination: str |
         with _connector(config.destination) as sap:
             result = sap.call_function(
                 "RFC_READ_TABLE",
-                import_params={
-                    "QUERY_TABLE": "TFDIR",
-                    "DELIMITER": "\t",
-                    "NO_DATA": "",
-                    "ROWSKIPS": 0,
-                    "ROWCOUNT": effective_limit,
-                },
-                input_tables={
-                    "FIELDS": [{"FIELDNAME": "FUNCNAME"}, {"FIELDNAME": "FMODE"}],
-                    "OPTIONS": [{"TEXT": f"FUNCNAME LIKE '{normalized_prefix}%'"}],
-                },
-                output_tables=["FIELDS", "DATA"],
-                table_fields={
-                    "FIELDS": ["FIELDNAME", "OFFSET", "LENGTH", "TYPE", "FIELDTEXT"],
-                    "DATA": ["WA"],
-                },
+                **request.call_kwargs(),
             )
         rows = _parse_read_table_rows(result)[:effective_limit]
         return {

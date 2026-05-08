@@ -31,3 +31,6 @@ libsapnwrfc.*
 libsapucum.*
 libicudecnumber.*
 sapnwrfc.dll
+
+# Proprietary/manual PDFs must stay local.
+docs/*.pdf

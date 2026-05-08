@@ -159,3 +159,70 @@ def test_sap_get_syslog_falls_back_to_bapi_syslog_read(monkeypatch):
     assert result["count"] == 1
     assert result["entries"][0]["mensaje"] == "Update error"
     assert fake.calls[0][0] == "BAPI_SYSLOG_READ"
+
+
+class CapturingReadTableConnector:
+    def __init__(self):
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return None
+
+    def has_function(self, function_name: str) -> bool:
+        return function_name.upper() == "RFC_READ_TABLE"
+
+    def call_function(self, function_name: str, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append((function_name.upper(), kwargs))
+        fields = [row["FIELDNAME"] for row in kwargs.get("input_tables", {}).get("FIELDS", [])]
+        return {"FIELDS": [{"FIELDNAME": field} for field in fields], "DATA": []}
+
+
+def test_short_dump_snap_fallback_builds_safe_options(monkeypatch):
+    fake = CapturingReadTableConnector()
+    monkeypatch.setattr(basis, "_connector", lambda destination=None: fake)
+
+    result = basis.sap_get_short_dumps(date_from="20260506", date_to="20260506", user="alice")
+
+    assert result["available"] is True
+    assert result["source"] == "SNAP"
+    assert fake.calls == [
+        (
+            "RFC_READ_TABLE",
+            {
+                "import_params": {"QUERY_TABLE": "SNAP", "DELIMITER": "\t", "NO_DATA": "", "ROWSKIPS": 0, "ROWCOUNT": 200},
+                "input_tables": {
+                    "FIELDS": [
+                        {"FIELDNAME": "DATUM"},
+                        {"FIELDNAME": "UZEIT"},
+                        {"FIELDNAME": "UNAME"},
+                        {"FIELDNAME": "PROG"},
+                        {"FIELDNAME": "AHOST"},
+                        {"FIELDNAME": "T100MSG"},
+                    ],
+                    "OPTIONS": [{"TEXT": "DATUM >= '20260506'"}, {"TEXT": "AND DATUM <= '20260506'"}, {"TEXT": "AND UNAME = 'ALICE'"}],
+                },
+                "output_tables": ["FIELDS", "DATA"],
+                "table_fields": {"FIELDS": ["FIELDNAME"], "DATA": ["WA"]},
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("payload", ["' OR '1'='1", "USER' AND '1'='1"])
+def test_user_audit_rejects_injection_payload_before_connector(monkeypatch, payload):
+    called = False
+
+    def connector(destination=None):
+        nonlocal called
+        called = True
+        return CapturingReadTableConnector()
+
+    monkeypatch.setattr(basis, "_connector", connector)
+
+    with pytest.raises(ValueError):
+        basis.sap_get_user_audit(payload)
+
+    assert called is False

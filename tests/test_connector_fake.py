@@ -125,4 +125,7 @@ def test_call_function_timeout_cancels_and_invalidates_connection(monkeypatch):
         connector.call_function("RFC_PING")
 
     assert connector.connection_handle is None
+    assert connector._connection_invalidated is True
     assert fake.RfcCancel.call_count == 1
+    with pytest.raises(RuntimeError, match="invalidated"):
+        connector.call_function("RFC_PING")

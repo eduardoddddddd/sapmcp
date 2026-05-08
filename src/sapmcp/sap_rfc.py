@@ -5,6 +5,7 @@ import ctypes
 import logging
 import os
 import platform
+import threading
 import time
 from ctypes import (
     POINTER,
@@ -161,9 +162,13 @@ class SapRFCConnector:
 
     def __init__(self, config: SapConnectionConfig | None = None) -> None:
         self.config = config or SapConnectionConfig.from_env()
+        # Kept for compatibility with older tests/fakes; runtime SDK calls use
+        # local RFC_ERROR_INFO objects whenever possible.
         self.error_info = self.RFC_ERROR_INFO()
         self.sap_lib: Any = None
         self.connection_handle: c_void_p | None = None
+        self._rfc_lock = threading.RLock()
+        self._connection_invalidated = False
         self.library_path = find_nwrfc_library(self.config)
         self._load_library()
 
@@ -268,47 +273,69 @@ class SapRFCConnector:
             lib.RfcDescribeType.argtypes = [c_void_p, SAP_UC_PTR, POINTER(c_void_p), POINTER(self.RFC_ERROR_INFO)]
             lib.RfcDescribeType.restype = c_ulong
 
-    def _raise_if_error(self, rc: int, operation: str) -> None:
+    def _operation_lock(self) -> threading.RLock:
+        # Tests build connectors via __new__ to avoid loading the proprietary SDK.
+        lock = getattr(self, "_rfc_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._rfc_lock = lock
+        return lock
+
+    def _new_error_info(self) -> "SapRFCConnector.RFC_ERROR_INFO":
+        return self.RFC_ERROR_INFO()
+
+    def _is_connection_invalidated(self) -> bool:
+        return bool(getattr(self, "_connection_invalidated", False))
+
+    def _raise_if_error(self, rc: int, operation: str, error_info: "SapRFCConnector.RFC_ERROR_INFO | None" = None) -> None:
         if rc != RFC_OK:
-            raise SapRFCError(operation, self.error_info)
+            raise SapRFCError(operation, error_info or self.error_info)
 
     def connect(self) -> None:
-        if self.connection_handle:
-            return
-        self.config.validate()
-        params = [(key, value) for key, value in self.config.params.items() if value not in (None, "")]
-        conn_params = (self.RFC_CONNECTION_PARAMETER * len(params))()
-        param_buffers: list[Any] = []
-        for index, (key, value) in enumerate(params):
-            name_buf = _uc_buffer(key)
-            value_buf = _uc_buffer(str(value))
-            param_buffers.extend([name_buf, value_buf])
-            conn_params[index].name = name_buf
-            conn_params[index].value = value_buf
+        with self._operation_lock():
+            if self._is_connection_invalidated():
+                raise RuntimeError("SAP connection was invalidated after an RFC timeout; create a new SapRFCConnector")
+            if self.connection_handle:
+                return
+            self.config.validate()
+            params = [(key, value) for key, value in self.config.params.items() if value not in (None, "")]
+            conn_params = (self.RFC_CONNECTION_PARAMETER * len(params))()
+            param_buffers: list[Any] = []
+            for index, (key, value) in enumerate(params):
+                name_buf = _uc_buffer(key)
+                value_buf = _uc_buffer(str(value))
+                param_buffers.extend([name_buf, value_buf])
+                conn_params[index].name = name_buf
+                conn_params[index].value = value_buf
 
-        start = time.time()
-        handle = self.sap_lib.RfcOpenConnection(conn_params, len(params), byref(self.error_info))
-        if not handle:
-            raise SapRFCError("RfcOpenConnection", self.error_info)
-        self.connection_handle = handle
-        logger.info("SAP connected in %.2fs", time.time() - start)
+            start = time.time()
+            error_info = self._new_error_info()
+            handle = self.sap_lib.RfcOpenConnection(conn_params, len(params), byref(error_info))
+            if not handle:
+                raise SapRFCError("RfcOpenConnection", error_info)
+            self.connection_handle = handle
+            logger.info("SAP connected in %.2fs", time.time() - start)
 
     def disconnect(self) -> None:
-        if self.connection_handle:
-            rc = self.sap_lib.RfcCloseConnection(self.connection_handle, byref(self.error_info))
-            self.connection_handle = None
-            self._raise_if_error(rc, "RfcCloseConnection")
+        with self._operation_lock():
+            if self.connection_handle:
+                error_info = self._new_error_info()
+                rc = self.sap_lib.RfcCloseConnection(self.connection_handle, byref(error_info))
+                self.connection_handle = None
+                self._raise_if_error(rc, "RfcCloseConnection", error_info)
 
     def has_function(self, function_name: str) -> bool:
         """Return whether an RFC function descriptor is available in the connected SAP system."""
-        if not self.connection_handle:
-            self.connect()
-        function_name = function_name.strip().upper()
-        try:
-            return bool(self.sap_lib.RfcGetFunctionDesc(self.connection_handle, _uc_ptr(function_name), byref(self.error_info)))
-        except Exception:
-            logger.debug("RfcGetFunctionDesc(%s) failed while checking availability", function_name, exc_info=True)
-            return False
+        with self._operation_lock():
+            if not self.connection_handle:
+                self.connect()
+            function_name = function_name.strip().upper()
+            error_info = self._new_error_info()
+            try:
+                return bool(self.sap_lib.RfcGetFunctionDesc(self.connection_handle, _uc_ptr(function_name), byref(error_info)))
+            except Exception:
+                logger.debug("RfcGetFunctionDesc(%s) failed while checking availability", function_name, exc_info=True)
+                return False
 
     def call_function(
         self,
@@ -323,6 +350,32 @@ class SapRFCConnector:
         buffer_size: int = 4096,
     ) -> dict[str, Any]:
         """Invoke an RFC-enabled function module."""
+        with self._operation_lock():
+            return self._call_function_locked(
+                function_name,
+                import_params=import_params,
+                input_tables=input_tables,
+                output_tables=output_tables,
+                table_fields=table_fields,
+                output_params=output_params,
+                nested_fields=nested_fields,
+                buffer_size=buffer_size,
+            )
+
+    def _call_function_locked(
+        self,
+        function_name: str,
+        *,
+        import_params: dict[str, Any] | None = None,
+        input_tables: dict[str, list[dict[str, Any]]] | None = None,
+        output_tables: list[str] | None = None,
+        table_fields: dict[str, list[str]] | None = None,
+        output_params: list[str] | None = None,
+        nested_fields: dict[str, dict[str, list[str]] | list[str]] | None = None,
+        buffer_size: int = 4096,
+    ) -> dict[str, Any]:
+        if self._is_connection_invalidated():
+            raise RuntimeError("SAP connection was invalidated after an RFC timeout; create a new SapRFCConnector")
         if not self.connection_handle:
             self.connect()
 
@@ -334,13 +387,15 @@ class SapRFCConnector:
         output_params = output_params or []
         nested_fields = nested_fields or {}
 
-        func_desc = self.sap_lib.RfcGetFunctionDesc(self.connection_handle, _uc_ptr(function_name), byref(self.error_info))
+        desc_error = self._new_error_info()
+        func_desc = self.sap_lib.RfcGetFunctionDesc(self.connection_handle, _uc_ptr(function_name), byref(desc_error))
         if not func_desc:
-            raise SapRFCError(f"RfcGetFunctionDesc({function_name})", self.error_info)
+            raise SapRFCError(f"RfcGetFunctionDesc({function_name})", desc_error)
 
-        func_handle = self.sap_lib.RfcCreateFunction(func_desc, byref(self.error_info))
+        create_error = self._new_error_info()
+        func_handle = self.sap_lib.RfcCreateFunction(func_desc, byref(create_error))
         if not func_handle:
-            raise SapRFCError(f"RfcCreateFunction({function_name})", self.error_info)
+            raise SapRFCError(f"RfcCreateFunction({function_name})", create_error)
 
         destroy_function = True
         try:
@@ -350,8 +405,8 @@ class SapRFCConnector:
             for name, value in import_params.items():
                 self.set_string(func_handle, name, value)
 
-            rc = self._invoke_with_timeout(func_handle, function_name)
-            self._raise_if_error(rc, f"RfcInvoke({function_name})")
+            rc, invoke_error = self._invoke_with_timeout(func_handle, function_name)
+            self._raise_if_error(rc, f"RfcInvoke({function_name})", invoke_error)
 
             result: dict[str, Any] = {}
             for table in output_tables:
@@ -372,9 +427,10 @@ class SapRFCConnector:
             raise
         finally:
             if destroy_function:
-                rc = self.sap_lib.RfcDestroyFunction(func_handle, byref(self.error_info))
+                destroy_error = self._new_error_info()
+                rc = self.sap_lib.RfcDestroyFunction(func_handle, byref(destroy_error))
                 if rc != RFC_OK:
-                    logger.warning("RfcDestroyFunction failed: %s", SapRFCError("RfcDestroyFunction", self.error_info))
+                    logger.warning("RfcDestroyFunction failed: %s", SapRFCError("RfcDestroyFunction", destroy_error))
 
     def _rfc_timeout_seconds(self) -> float:
         raw = os.getenv("SAPMCP_RFC_TIMEOUT", "60")
@@ -385,46 +441,77 @@ class SapRFCConnector:
             return 60.0
         return max(timeout, 0.001)
 
-    def _invoke_with_timeout(self, func_handle: c_void_p, function_name: str) -> int:
+    def _invoke_with_timeout(self, func_handle: c_void_p, function_name: str) -> tuple[int, "SapRFCConnector.RFC_ERROR_INFO"]:
+        """Invoke RFC with a Python-side timeout guard.
+
+        The SAP NW RFC SDK call itself is synchronous. On timeout we call
+        RfcCancel and invalidate this connector because the worker thread may
+        still be inside sapnwrfc. The function handle is not destroyed on the
+        caller thread while it may be in use; a done callback attempts deferred
+        destruction only after RfcInvoke returns.
+        """
+
         if not self.connection_handle:
             raise RuntimeError("SAP connection is not open")
         connection_handle = self.connection_handle
         timeout = self._rfc_timeout_seconds()
+        invoke_error = self._new_error_info()
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="sapmcp-rfc-invoke")
-        future = executor.submit(self.sap_lib.RfcInvoke, connection_handle, func_handle, byref(self.error_info))
+        future = executor.submit(self.sap_lib.RfcInvoke, connection_handle, func_handle, byref(invoke_error))
         try:
-            return int(future.result(timeout=timeout))
+            return int(future.result(timeout=timeout)), invoke_error
         except concurrent.futures.TimeoutError as exc:
-            self._cancel_connection()
+            self._schedule_destroy_after_invoke(future, func_handle, function_name)
+            self._cancel_connection_after_timeout()
             raise TimeoutError(f"RfcInvoke({function_name}) timed out after {timeout:g}s") from exc
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
-    def _cancel_connection(self) -> None:
+    def _schedule_destroy_after_invoke(self, future: concurrent.futures.Future[Any], func_handle: c_void_p, function_name: str) -> None:
+        def destroy_when_done(done: concurrent.futures.Future[Any]) -> None:
+            try:
+                done.result()
+            except Exception:
+                logger.debug("RfcInvoke(%s) worker completed after timeout with an exception", function_name, exc_info=True)
+            destroy_error = self._new_error_info()
+            try:
+                rc = self.sap_lib.RfcDestroyFunction(func_handle, byref(destroy_error))
+                if rc != RFC_OK:
+                    logger.warning("Deferred RfcDestroyFunction(%s) failed: %s", function_name, SapRFCError("RfcDestroyFunction", destroy_error))
+            except Exception:
+                logger.exception("Deferred RfcDestroyFunction(%s) failed", function_name)
+
+        future.add_done_callback(destroy_when_done)
+
+    def _cancel_connection_after_timeout(self) -> None:
         handle = self.connection_handle
+        cancel_error = self._new_error_info()
         try:
             if handle and hasattr(self.sap_lib, "RfcCancel"):
-                rc = self.sap_lib.RfcCancel(handle, byref(self.error_info))
+                rc = self.sap_lib.RfcCancel(handle, byref(cancel_error))
                 if rc != RFC_OK:
                     logger.warning("RfcCancel returned rc=%s", rc)
         except Exception:
             logger.exception("RfcCancel failed")
         finally:
             self.connection_handle = None
+            self._connection_invalidated = True
 
     def set_string(self, container_handle: c_void_p, field: str, value: Any) -> None:
         text = "" if value is None else str(value)
-        rc = self.sap_lib.RfcSetString(container_handle, _uc_ptr(field.upper()), _uc_ptr(text), len(text), byref(self.error_info))
-        self._raise_if_error(rc, f"RfcSetString({field})")
+        error_info = self._new_error_info()
+        rc = self.sap_lib.RfcSetString(container_handle, _uc_ptr(field.upper()), _uc_ptr(text), len(text), byref(error_info))
+        self._raise_if_error(rc, f"RfcSetString({field})", error_info)
 
     def get_string(self, container_handle: c_void_p, field: str, *, buffer_size: int = 4096) -> str:
         size = max(1, int(buffer_size))
+        error_info = self._new_error_info()
         while True:
             if size > MAX_STRING_BUFFER:
                 raise BufferError(f"RfcGetString({field}) requested buffer exceeds {MAX_STRING_BUFFER} bytes")
             buffer = _uc_buffer(size=size)
             length = c_ulong()
-            rc = self.sap_lib.RfcGetString(container_handle, _uc_ptr(field.upper()), buffer, size, byref(length), byref(self.error_info))
+            rc = self.sap_lib.RfcGetString(container_handle, _uc_ptr(field.upper()), buffer, size, byref(length), byref(error_info))
             if rc == RFC_OK:
                 return _uc_to_str(buffer)
             if rc == RFC_BUFFER_TOO_SMALL:
@@ -436,46 +523,51 @@ class SapRFCConnector:
                     next_size = size * 2
                 size = next_size
                 continue
-            self._raise_if_error(rc, f"RfcGetString({field})")
+            self._raise_if_error(rc, f"RfcGetString({field})", error_info)
 
     def get_int(self, container_handle: c_void_p, field: str) -> int:
         if not hasattr(self.sap_lib, "RfcGetInt"):
             return int(self.get_string(container_handle, field).strip() or 0)
         value = c_int()
-        rc = self.sap_lib.RfcGetInt(container_handle, _uc_ptr(field.upper()), byref(value), byref(self.error_info))
-        self._raise_if_error(rc, f"RfcGetInt({field})")
+        error_info = self._new_error_info()
+        rc = self.sap_lib.RfcGetInt(container_handle, _uc_ptr(field.upper()), byref(value), byref(error_info))
+        self._raise_if_error(rc, f"RfcGetInt({field})", error_info)
         return int(value.value)
 
     def get_int8(self, container_handle: c_void_p, field: str) -> int:
         if not hasattr(self.sap_lib, "RfcGetInt8"):
             return int(self.get_string(container_handle, field).strip() or 0)
         value = c_longlong()
-        rc = self.sap_lib.RfcGetInt8(container_handle, _uc_ptr(field.upper()), byref(value), byref(self.error_info))
-        self._raise_if_error(rc, f"RfcGetInt8({field})")
+        error_info = self._new_error_info()
+        rc = self.sap_lib.RfcGetInt8(container_handle, _uc_ptr(field.upper()), byref(value), byref(error_info))
+        self._raise_if_error(rc, f"RfcGetInt8({field})", error_info)
         return int(value.value)
 
     def get_date(self, container_handle: c_void_p, field: str) -> str:
         if not hasattr(self.sap_lib, "RfcGetDate"):
             return self.get_string(container_handle, field, buffer_size=9)
         buffer = _uc_buffer(size=9)
-        rc = self.sap_lib.RfcGetDate(container_handle, _uc_ptr(field.upper()), buffer, byref(self.error_info))
-        self._raise_if_error(rc, f"RfcGetDate({field})")
+        error_info = self._new_error_info()
+        rc = self.sap_lib.RfcGetDate(container_handle, _uc_ptr(field.upper()), buffer, byref(error_info))
+        self._raise_if_error(rc, f"RfcGetDate({field})", error_info)
         return _uc_to_str(buffer)
 
     def get_time(self, container_handle: c_void_p, field: str) -> str:
         if not hasattr(self.sap_lib, "RfcGetTime"):
             return self.get_string(container_handle, field, buffer_size=7)
         buffer = _uc_buffer(size=7)
-        rc = self.sap_lib.RfcGetTime(container_handle, _uc_ptr(field.upper()), buffer, byref(self.error_info))
-        self._raise_if_error(rc, f"RfcGetTime({field})")
+        error_info = self._new_error_info()
+        rc = self.sap_lib.RfcGetTime(container_handle, _uc_ptr(field.upper()), buffer, byref(error_info))
+        self._raise_if_error(rc, f"RfcGetTime({field})", error_info)
         return _uc_to_str(buffer)
 
     def get_float(self, container_handle: c_void_p, field: str) -> float:
         if not hasattr(self.sap_lib, "RfcGetFloat"):
             return float(self.get_string(container_handle, field).strip() or 0)
         value = c_double()
-        rc = self.sap_lib.RfcGetFloat(container_handle, _uc_ptr(field.upper()), byref(value), byref(self.error_info))
-        self._raise_if_error(rc, f"RfcGetFloat({field})")
+        error_info = self._new_error_info()
+        rc = self.sap_lib.RfcGetFloat(container_handle, _uc_ptr(field.upper()), byref(value), byref(error_info))
+        self._raise_if_error(rc, f"RfcGetFloat({field})", error_info)
         return float(value.value)
 
     def get_bytes_hex(self, container_handle: c_void_p, field: str, *, xstring: bool = False, buffer_size: int = 4096) -> str:
@@ -484,12 +576,13 @@ class SapRFCConnector:
             return self.get_string(container_handle, field, buffer_size=buffer_size).encode("utf-8", errors="surrogatepass").hex()
         func = getattr(self.sap_lib, func_name)
         size = max(1, int(buffer_size))
+        error_info = self._new_error_info()
         while True:
             if size > MAX_STRING_BUFFER:
                 raise BufferError(f"{func_name}({field}) requested buffer exceeds {MAX_STRING_BUFFER} bytes")
             buffer = (c_ubyte * size)()
             length = c_ulong()
-            rc = func(container_handle, _uc_ptr(field.upper()), buffer, size, byref(length), byref(self.error_info))
+            rc = func(container_handle, _uc_ptr(field.upper()), buffer, size, byref(length), byref(error_info))
             if rc == RFC_OK:
                 return bytes(buffer[: length.value]).hex()
             if rc == RFC_BUFFER_TOO_SMALL:
@@ -498,7 +591,7 @@ class SapRFCConnector:
                     raise BufferError(f"{func_name}({field}) requested {requested} bytes; max={MAX_STRING_BUFFER}")
                 size = max(size * 2, requested + 1 if requested else 0)
                 continue
-            self._raise_if_error(rc, f"{func_name}({field})")
+            self._raise_if_error(rc, f"{func_name}({field})", error_info)
 
     def _type_as_string(self, type_code: int) -> str | None:
         if hasattr(self.sap_lib, "RfcGetTypeAsString"):
@@ -529,15 +622,16 @@ class SapRFCConnector:
             return None
         desc = self.RFC_FIELD_DESC()
         rc: int | None = None
+        error_info = self._new_error_info()
         if hasattr(self.sap_lib, "RfcGetFieldDescByName"):
             try:
-                rc = self.sap_lib.RfcGetFieldDescByName(row_handle, _uc_ptr(field.upper()), byref(desc), byref(self.error_info))
+                rc = self.sap_lib.RfcGetFieldDescByName(row_handle, _uc_ptr(field.upper()), byref(desc), byref(error_info))
             except Exception:
                 logger.debug("RfcGetFieldDescByName failed for %s", field, exc_info=True)
                 rc = None
         if rc != RFC_OK and hasattr(self.sap_lib, "RfcGetFieldDescByIndex"):
             try:
-                rc = self.sap_lib.RfcGetFieldDescByIndex(row_handle, index, byref(desc), byref(self.error_info))
+                rc = self.sap_lib.RfcGetFieldDescByIndex(row_handle, index, byref(desc), byref(error_info))
             except Exception:
                 logger.debug("RfcGetFieldDescByIndex failed for %s", field, exc_info=True)
                 rc = None
@@ -571,12 +665,14 @@ class SapRFCConnector:
 
     def set_table_parameter(self, func_handle: c_void_p, table_name: str, rows: list[dict[str, Any]]) -> None:
         table_handle = self.RFC_TABLE_HANDLE()
-        rc = self.sap_lib.RfcGetTable(func_handle, _uc_ptr(table_name.upper()), byref(table_handle), byref(self.error_info))
-        self._raise_if_error(rc, f"RfcGetTable({table_name})")
+        error_info = self._new_error_info()
+        rc = self.sap_lib.RfcGetTable(func_handle, _uc_ptr(table_name.upper()), byref(table_handle), byref(error_info))
+        self._raise_if_error(rc, f"RfcGetTable({table_name})", error_info)
         for row in rows:
-            struct_handle = self.sap_lib.RfcAppendNewRow(table_handle, byref(self.error_info))
+            append_error = self._new_error_info()
+            struct_handle = self.sap_lib.RfcAppendNewRow(table_handle, byref(append_error))
             if not struct_handle:
-                raise SapRFCError(f"RfcAppendNewRow({table_name})", self.error_info)
+                raise SapRFCError(f"RfcAppendNewRow({table_name})", append_error)
             for field, value in row.items():
                 if isinstance(value, list):
                     self._fill_nested_table(struct_handle, field, value)
@@ -587,12 +683,14 @@ class SapRFCConnector:
         if level > max_level:
             return
         table_handle = self.RFC_TABLE_HANDLE()
-        rc = self.sap_lib.RfcGetTable(parent_handle, _uc_ptr(table_field_name.upper()), byref(table_handle), byref(self.error_info))
-        self._raise_if_error(rc, f"RfcGetTable(nested {table_field_name})")
+        error_info = self._new_error_info()
+        rc = self.sap_lib.RfcGetTable(parent_handle, _uc_ptr(table_field_name.upper()), byref(table_handle), byref(error_info))
+        self._raise_if_error(rc, f"RfcGetTable(nested {table_field_name})", error_info)
         for row in rows:
-            struct_handle = self.sap_lib.RfcAppendNewRow(table_handle, byref(self.error_info))
+            append_error = self._new_error_info()
+            struct_handle = self.sap_lib.RfcAppendNewRow(table_handle, byref(append_error))
             if not struct_handle:
-                raise SapRFCError(f"RfcAppendNewRow(nested {table_field_name})", self.error_info)
+                raise SapRFCError(f"RfcAppendNewRow(nested {table_field_name})", append_error)
             for field, value in row.items():
                 if isinstance(value, list):
                     self._fill_nested_table(struct_handle, field, value, level=level + 1, max_level=max_level)
@@ -609,27 +707,32 @@ class SapRFCConnector:
         nested_fields: dict[str, list[str]] | list[str] | None = None,
     ) -> list[dict[str, Any]]:
         table_handle = self.RFC_TABLE_HANDLE()
-        rc = self.sap_lib.RfcGetTable(func_handle, _uc_ptr(table_name.upper()), byref(table_handle), byref(self.error_info))
-        self._raise_if_error(rc, f"RfcGetTable({table_name})")
+        error_info = self._new_error_info()
+        rc = self.sap_lib.RfcGetTable(func_handle, _uc_ptr(table_name.upper()), byref(table_handle), byref(error_info))
+        self._raise_if_error(rc, f"RfcGetTable({table_name})", error_info)
         row_count = c_ulong()
-        rc = self.sap_lib.RfcGetRowCount(table_handle, byref(row_count), byref(self.error_info))
-        self._raise_if_error(rc, f"RfcGetRowCount({table_name})")
+        count_error = self._new_error_info()
+        rc = self.sap_lib.RfcGetRowCount(table_handle, byref(row_count), byref(count_error))
+        self._raise_if_error(rc, f"RfcGetRowCount({table_name})", count_error)
 
         result: list[dict[str, Any]] = []
         if row_count.value == 0:
             return result
 
         if hasattr(self.sap_lib, "RfcMoveToFirstRow"):
-            rc = self.sap_lib.RfcMoveToFirstRow(table_handle, byref(self.error_info))
-            self._raise_if_error(rc, f"RfcMoveToFirstRow({table_name})")
+            move_error = self._new_error_info()
+            rc = self.sap_lib.RfcMoveToFirstRow(table_handle, byref(move_error))
+            self._raise_if_error(rc, f"RfcMoveToFirstRow({table_name})", move_error)
 
         for index in range(row_count.value):
             if index > 0:
-                rc = self.sap_lib.RfcMoveToNextRow(table_handle, byref(self.error_info))
-                self._raise_if_error(rc, f"RfcMoveToNextRow({table_name})")
-            row_handle = self.sap_lib.RfcGetCurrentRow(table_handle, byref(self.error_info))
+                move_error = self._new_error_info()
+                rc = self.sap_lib.RfcMoveToNextRow(table_handle, byref(move_error))
+                self._raise_if_error(rc, f"RfcMoveToNextRow({table_name})", move_error)
+            row_error = self._new_error_info()
+            row_handle = self.sap_lib.RfcGetCurrentRow(table_handle, byref(row_error))
             if not row_handle:
-                raise SapRFCError(f"RfcGetCurrentRow({table_name})", self.error_info)
+                raise SapRFCError(f"RfcGetCurrentRow({table_name})", row_error)
             row: dict[str, Any] = {}
             for field_index, field in enumerate(fields):
                 row[field.upper()] = self._get_field_value(row_handle, field, field_index, buffer_size=buffer_size)
@@ -641,22 +744,29 @@ class SapRFCConnector:
 
     def _extract_nested_table(self, struct_handle: c_void_p, table_name: str, fields: list[str]) -> list[dict[str, Any]]:
         table_handle = self.RFC_TABLE_HANDLE()
-        rc = self.sap_lib.RfcGetTable(struct_handle, _uc_ptr(table_name.upper()), byref(table_handle), byref(self.error_info))
-        self._raise_if_error(rc, f"RfcGetTable(nested {table_name})")
+        error_info = self._new_error_info()
+        rc = self.sap_lib.RfcGetTable(struct_handle, _uc_ptr(table_name.upper()), byref(table_handle), byref(error_info))
+        self._raise_if_error(rc, f"RfcGetTable(nested {table_name})", error_info)
         row_count = c_ulong()
-        rc = self.sap_lib.RfcGetRowCount(table_handle, byref(row_count), byref(self.error_info))
-        self._raise_if_error(rc, f"RfcGetRowCount(nested {table_name})")
+        count_error = self._new_error_info()
+        rc = self.sap_lib.RfcGetRowCount(table_handle, byref(row_count), byref(count_error))
+        self._raise_if_error(rc, f"RfcGetRowCount(nested {table_name})", count_error)
         result: list[dict[str, Any]] = []
         if row_count.value == 0:
             return result
         if hasattr(self.sap_lib, "RfcMoveToFirstRow"):
-            rc = self.sap_lib.RfcMoveToFirstRow(table_handle, byref(self.error_info))
-            self._raise_if_error(rc, f"RfcMoveToFirstRow(nested {table_name})")
+            move_error = self._new_error_info()
+            rc = self.sap_lib.RfcMoveToFirstRow(table_handle, byref(move_error))
+            self._raise_if_error(rc, f"RfcMoveToFirstRow(nested {table_name})", move_error)
         for index in range(row_count.value):
             if index > 0:
-                rc = self.sap_lib.RfcMoveToNextRow(table_handle, byref(self.error_info))
-                self._raise_if_error(rc, f"RfcMoveToNextRow(nested {table_name})")
-            row_handle = self.sap_lib.RfcGetCurrentRow(table_handle, byref(self.error_info))
+                move_error = self._new_error_info()
+                rc = self.sap_lib.RfcMoveToNextRow(table_handle, byref(move_error))
+                self._raise_if_error(rc, f"RfcMoveToNextRow(nested {table_name})", move_error)
+            row_error = self._new_error_info()
+            row_handle = self.sap_lib.RfcGetCurrentRow(table_handle, byref(row_error))
+            if not row_handle:
+                raise SapRFCError(f"RfcGetCurrentRow(nested {table_name})", row_error)
             row = {field.upper(): self._get_field_value(row_handle, field, field_index, buffer_size=4096) for field_index, field in enumerate(fields)}
             result.append(row)
         return result

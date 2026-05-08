@@ -6,10 +6,16 @@ import inspect
 import json
 import os
 import re
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, TypeVar
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - fcntl is available on macOS/Linux
+    fcntl = None  # type: ignore[assignment]
 
 from .config import DEFAULT_DESTINATION_NAME, SafetyPolicy, SapConnectionConfig
 from .sap_rfc import SapRFCError
@@ -118,11 +124,26 @@ def _error_info(exc: BaseException) -> tuple[int, str | None, str | None]:
     return 1, exc.__class__.__name__, _redact_text(str(exc))
 
 
+@contextmanager
+def _exclusive_lock(fh: Any):
+    if fcntl is None:
+        yield
+        return
+    fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    try:
+        yield
+    finally:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 def _write_record(record: dict[str, Any]) -> None:
     path = audit_log_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, sort_keys=True, ensure_ascii=False, default=str) + "\n")
+        with _exclusive_lock(fh):
+            fh.write(json.dumps(record, sort_keys=True, ensure_ascii=False, default=str) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
 
 
 def audited(tool_name: str) -> Callable[[F], F]:
