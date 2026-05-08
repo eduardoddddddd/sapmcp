@@ -195,6 +195,38 @@ def test_rfc_catalog_resource_uses_read_table_and_policy_limit(monkeypatch):
     assert catalog["functions"] == ["BAPI_USER_GET_DETAIL"]
 
 
+def test_rfc_catalog_cache_is_reused_across_requested_limits(monkeypatch):
+    calls: list[int] = []
+
+    class MultiRowCatalogConnector(FakeSDKConnector):
+        def call_function(self, function_name, **kwargs):
+            if function_name.upper() != "RFC_READ_TABLE":
+                return super().call_function(function_name, **kwargs)
+            calls.append(kwargs["import_params"]["ROWCOUNT"])
+            fields = [row["FIELDNAME"] for row in kwargs["input_tables"]["FIELDS"]]
+            rows = [
+                {"FUNCNAME": "Z_ALPHA", "FMODE": "R"},
+                {"FUNCNAME": "Z_BETA", "FMODE": "R"},
+                {"FUNCNAME": "Z_GAMMA", "FMODE": "R"},
+            ]
+            return {
+                "FIELDS": [{"FIELDNAME": field} for field in fields],
+                "DATA": [{"WA": "\t".join(row.get(field, "") for field in fields)} for row in rows],
+            }
+
+    monkeypatch.setattr(resources, "_connector", lambda destination=None: MultiRowCatalogConnector([]))
+    monkeypatch.setenv("SAPMCP_MAX_ROWS", "10")
+
+    one = resources.search_rfc_catalog("Z_", limit=1)
+    three = resources.search_rfc_catalog("Z_", limit=3)
+
+    assert calls == [10]
+    assert one["limit"] == 1
+    assert one["functions"] == ["Z_ALPHA"]
+    assert three["limit"] == 3
+    assert three["functions"] == ["Z_ALPHA", "Z_BETA", "Z_GAMMA"]
+
+
 def test_rfc_catalog_prefix_is_escaped_as_literal(monkeypatch):
     seen_kwargs: list[dict] = []
 

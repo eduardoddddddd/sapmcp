@@ -18,6 +18,7 @@ def make_fake_sdk(**overrides):
     fake = SimpleNamespace()
     defaults = {
         "RfcOpenConnection": Mock(return_value=100),
+        "RfcGetVersion": Mock(return_value=None),
         "RfcCloseConnection": Mock(return_value=0),
         "RfcCancel": Mock(return_value=0),
         "RfcGetFunctionDesc": Mock(return_value=101),
@@ -69,6 +70,15 @@ def test_get_string_retries_buffer_too_small_once():
 
     assert connector.get_string(301, "TEXT", buffer_size=4) == value
     assert calls == [4, len(value) + 2]
+
+
+def test_setup_function_prototypes_declares_rfc_get_version():
+    fake = make_fake_sdk()
+
+    make_connector(fake)
+
+    assert fake.RfcGetVersion.argtypes is not None
+    assert fake.RfcGetVersion.restype is None
 
 
 def test_get_string_aborts_when_requested_length_exceeds_one_mib():

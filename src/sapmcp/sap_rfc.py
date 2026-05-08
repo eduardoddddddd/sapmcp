@@ -195,6 +195,10 @@ class SapRFCConnector:
         lib.RfcOpenConnection.argtypes = [POINTER(self.RFC_CONNECTION_PARAMETER), c_ulong, POINTER(self.RFC_ERROR_INFO)]
         lib.RfcOpenConnection.restype = c_void_p
 
+        if hasattr(lib, "RfcGetVersion"):
+            lib.RfcGetVersion.argtypes = [POINTER(c_uint), POINTER(c_uint), POINTER(c_uint)]
+            lib.RfcGetVersion.restype = None
+
         lib.RfcCloseConnection.argtypes = [c_void_p, POINTER(self.RFC_ERROR_INFO)]
         lib.RfcCloseConnection.restype = c_ulong
 

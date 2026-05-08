@@ -110,6 +110,14 @@ def _call(sap: Any, function_name: str, **kwargs: Any) -> dict[str, Any]:
         raise
 
 
+def _policy_allows(function_name: str) -> tuple[bool, PermissionError | None]:
+    try:
+        _policy().assert_allowed(function_name)
+    except PermissionError as exc:
+        return False, exc
+    return True, None
+
+
 def _read_table(sap: Any, table: str, fields: list[str], where: list[str] | None = None, *, rowcount: int = 200, rowskips: int = 0) -> list[dict[str, str]]:
     request = build_rfc_read_table_request(
         table,
@@ -431,34 +439,66 @@ def _job_datetime(row: dict[str, Any], date_names: tuple[str, ...], time_names: 
     return f"{date}{' ' + time if time else ''}"
 
 
+def _read_jobs_from_tbtco(sap: Any, since: str, wanted: str | None) -> list[dict[str, str]]:
+    where = [sap_ge("SDLSTRTDT", since)]
+    if wanted:
+        where.append(sap_eq("STATUS", wanted, connector="AND"))
+    return _read_table(
+        sap,
+        "TBTCO",
+        ["JOBNAME", "JOBCOUNT", "STATUS", "SDLSTRTDT", "SDLSTRTTM", "ENDDATE", "ENDTIME", "SDLUNAME"],
+        where,
+        rowcount=SafetyPolicy.from_env().max_rows,
+    )
+
+
 @audited("sap_get_jobs")
 def sap_get_jobs(top_n: int = 50, status: str | None = None, since_days: int = 1, destination: str | None = None) -> dict[str, Any]:
-    """Read SAP background jobs via BAPI_XBP_JOB_SELECT."""
+    """Read SAP background jobs via BAPI_XBP_JOB_SELECT, with TBTCO fallback.
+
+    In strict allowlist mode the fallback is intentional: if BAPI_XBP_JOB_SELECT
+    is not allowed but RFC_READ_TABLE is allowed, sapmcp reads TBTCO instead of
+    failing before the fallback path. If neither RFC is allowed, the original
+    policy error is preserved.
+    """
     wanted = normalize_job_status(status) or None
     since = (datetime.now() - timedelta(days=max(0, int(since_days)))).strftime("%Y%m%d")
     source = "BAPI_XBP_JOB_SELECT"
     with _connector(destination) as sap:
-        try:
-            result = _call(
-                sap,
-                "BAPI_XBP_JOB_SELECT",
-                import_params={"EXTERNAL_USER_NAME": SapConnectionConfig.from_destination(destination).params.get("USER", "")},
-                output_tables=["JOB_HEAD"],
-                table_fields={
-                    "JOB_HEAD": ["JOBNAME", "JOBCOUNT", "STATUS", "SDLSTRTDT", "SDLSTRTTM", "ENDDATE", "ENDTIME", "SDLUNAME", "STEPCOUNT"],
-                },
-            )
-        except LookupError as exc:
-            return _unavailable("BAPI_XBP_JOB_SELECT", exc)
-        except SapRFCError:
-            # Some Basis releases require a structured JOB_SELECT_PARAM import that
-            # this lightweight ctypes bridge does not fill yet. Keep the tool useful
-            # in read-only mode by falling back to the transparent job header table.
+        bapi_allowed, bapi_policy_error = _policy_allows("BAPI_XBP_JOB_SELECT")
+        if bapi_allowed:
+            try:
+                result = _call(
+                    sap,
+                    "BAPI_XBP_JOB_SELECT",
+                    import_params={"EXTERNAL_USER_NAME": SapConnectionConfig.from_destination(destination).params.get("USER", "")},
+                    output_tables=["JOB_HEAD"],
+                    table_fields={
+                        "JOB_HEAD": ["JOBNAME", "JOBCOUNT", "STATUS", "SDLSTRTDT", "SDLSTRTTM", "ENDDATE", "ENDTIME", "SDLUNAME", "STEPCOUNT"],
+                    },
+                )
+            except LookupError as exc:
+                rfc_read_allowed, _ = _policy_allows("RFC_READ_TABLE")
+                if not rfc_read_allowed:
+                    return _unavailable("BAPI_XBP_JOB_SELECT", exc)
+                source = "TBTCO"
+                rows = _read_jobs_from_tbtco(sap, since, wanted)
+                result = {"JOB_HEAD": rows}
+            except SapRFCError:
+                # Some Basis releases require a structured JOB_SELECT_PARAM import that
+                # this lightweight ctypes bridge does not fill yet. Keep the tool useful
+                # in read-only mode by falling back to the transparent job header table.
+                source = "TBTCO"
+                rows = _read_jobs_from_tbtco(sap, since, wanted)
+                result = {"JOB_HEAD": rows}
+        else:
+            rfc_read_allowed, _ = _policy_allows("RFC_READ_TABLE")
+            if not rfc_read_allowed:
+                if bapi_policy_error is not None:
+                    raise bapi_policy_error
+                raise PermissionError("RFC BAPI_XBP_JOB_SELECT blocked by policy")
             source = "TBTCO"
-            where = [sap_ge("SDLSTRTDT", since)]
-            if wanted:
-                where.append(sap_eq("STATUS", wanted, connector="AND"))
-            rows = _read_table(sap, "TBTCO", ["JOBNAME", "JOBCOUNT", "STATUS", "SDLSTRTDT", "SDLSTRTTM", "ENDDATE", "ENDTIME", "SDLUNAME"], where, rowcount=SafetyPolicy.from_env().max_rows)
+            rows = _read_jobs_from_tbtco(sap, since, wanted)
             result = {"JOB_HEAD": rows}
     jobs = []
     for row in _rows(result, "JOB_HEAD", "JOBLIST", "JOBS", "SELECTED_JOBS"):

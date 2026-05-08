@@ -85,6 +85,16 @@ class FakeBasisConnector:
                     "FIELDS": [{"FIELDNAME": field} for field in ["BNAME", "GLTGV", "GLTGB", "TRDAT", "LTIME", "UFLAG", "LOCNT"]],
                     "DATA": [{"WA": "ALICE\t20260101\t20261231\t20260505\t081500\t0\t3"}],
                 }
+            if table == "TBTCO":
+                fields = [row["FIELDNAME"] for row in kwargs.get("input_tables", {}).get("FIELDS", [])]
+                rows = [
+                    {"JOBNAME": "ABORTED_TBTCO", "JOBCOUNT": "003", "STATUS": "A", "SDLSTRTDT": "20260506", "SDLSTRTTM": "140000", "ENDDATE": "20260506", "ENDTIME": "140100", "SDLUNAME": "BATCH"},
+                    {"JOBNAME": "FINISHED_TBTCO", "JOBCOUNT": "004", "STATUS": "F", "SDLSTRTDT": "20260506", "SDLSTRTTM": "150000", "ENDDATE": "20260506", "ENDTIME": "150100", "SDLUNAME": "BATCH"},
+                ]
+                return {
+                    "FIELDS": [{"FIELDNAME": field} for field in fields],
+                    "DATA": [{"WA": "\t".join(row.get(field, "") for field in fields)} for row in rows],
+                }
             raise AssertionError(f"Unexpected RFC_READ_TABLE table: {table}")
         raise AssertionError(f"Unexpected RFC: {name}")
 
@@ -146,6 +156,21 @@ def test_sap_get_jobs_filters_status(monkeypatch):
     assert result["jobs"][0]["jobname"] == "FINISHED_JOB"
     assert result["jobs"][0]["status"] == "F"
     assert result["jobs"][0]["steps"] == 2
+
+
+def test_sap_get_jobs_falls_back_to_tbtco_when_bapi_not_allowlisted(monkeypatch):
+    fake = FakeBasisConnector({"RFC_READ_TABLE"})
+    monkeypatch.setattr(basis, "_connector", lambda destination=None: fake)
+    monkeypatch.setenv("SAPMCP_ALLOWED_RFC", "RFC_READ_TABLE")
+
+    result = basis.sap_get_jobs(status="A", top_n=50, since_days=1)
+
+    assert result["available"] is True
+    assert result["source"] == "TBTCO"
+    assert result["count"] == 1
+    assert result["jobs"][0]["jobname"] == "ABORTED_TBTCO"
+    assert [call[0] for call in fake.calls] == ["RFC_READ_TABLE"]
+    assert fake.calls[0][1]["input_tables"]["OPTIONS"][1] == {"TEXT": "AND STATUS = 'A'"}
 
 
 def test_sap_get_syslog_falls_back_to_bapi_syslog_read(monkeypatch):

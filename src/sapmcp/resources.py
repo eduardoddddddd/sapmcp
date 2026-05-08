@@ -290,22 +290,33 @@ def _parse_read_table_rows(result: dict[str, Any]) -> list[dict[str, str]]:
     return rows
 
 
+def _limit_rfc_catalog_payload(payload: dict[str, Any], limit: int) -> dict[str, Any]:
+    limited = dict(payload)
+    rows = list(payload.get("rows", []))[:limit]
+    limited["limit"] = limit
+    limited["rows_returned"] = len(rows)
+    limited["functions"] = [row.get("FUNCNAME", "") for row in rows if row.get("FUNCNAME")]
+    limited["rows"] = rows
+    return limited
+
+
 def search_rfc_catalog(prefix: str, limit: int | None = None, destination: str | None = None) -> dict[str, Any]:
     """Cached `sap://catalog/rfc?prefix=...` payload."""
     normalized_prefix = prefix.strip().upper()
     config = _destination_config(destination)
     policy = _policy()
     effective_limit = policy.max_rows if limit is None else min(max(0, int(limit)), policy.max_rows)
+    fetch_limit = policy.max_rows
     request = build_rfc_read_table_request(
         "TFDIR",
         ["FUNCNAME", "FMODE"],
         [sap_like_prefix("FUNCNAME", normalized_prefix)],
-        rowcount=effective_limit,
+        rowcount=fetch_limit,
         rowskips=0,
         delimiter="\t",
         include_field_metadata=True,
     )
-    cache_key = f"{_ns(config.destination)}/catalog/rfc?prefix={normalized_prefix}&limit={effective_limit}"
+    cache_key = f"{_ns(config.destination)}/catalog/rfc?prefix={normalized_prefix}&max_rows={fetch_limit}"
 
     def load() -> dict[str, Any]:
         policy.assert_allowed("RFC_READ_TABLE")
@@ -314,16 +325,17 @@ def search_rfc_catalog(prefix: str, limit: int | None = None, destination: str |
                 "RFC_READ_TABLE",
                 **request.call_kwargs(),
             )
-        rows = _parse_read_table_rows(result)[:effective_limit]
+        rows = _parse_read_table_rows(result)[:fetch_limit]
         return {
             "uri": _resource_uri(config.destination, f"catalog/rfc?prefix={normalized_prefix}"),
             "destination": config.destination,
             "prefix": normalized_prefix,
             "ttl_seconds": TTL_RFC_CATALOG,
-            "limit": effective_limit,
+            "limit": fetch_limit,
             "rows_returned": len(rows),
             "functions": [row.get("FUNCNAME", "") for row in rows if row.get("FUNCNAME")],
             "rows": rows,
         }
 
-    return _cache_get_or_load(cache_key, TTL_RFC_CATALOG, load)
+    payload = _cache_get_or_load(cache_key, TTL_RFC_CATALOG, load)
+    return _limit_rfc_catalog_payload(payload, effective_limit)

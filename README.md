@@ -690,5 +690,5 @@ pytest -q
 Resultado esperado actual:
 
 ```text
-65 passed
+68 passed
 ```
