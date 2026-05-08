@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -125,6 +128,80 @@ def test_function_interface_resource_uses_ttl_and_manual_invalidation(monkeypatc
     assert removed == 1
     resources.get_function_interface("BAPI_USER_GET_DETAIL")
     assert calls == ["RFC_GET_FUNCTION_INTERFACE", "RFC_GET_FUNCTION_INTERFACE", "RFC_GET_FUNCTION_INTERFACE"]
+
+
+def test_cache_get_or_load_deduplicates_concurrent_misses():
+    workers = 8
+    calls = 0
+    calls_lock = threading.Lock()
+    start = threading.Barrier(workers)
+
+    def load_once():
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        time.sleep(0.05)
+        return {"items": []}
+
+    def read_cached():
+        start.wait(timeout=2)
+        return resources._cache_get_or_load("race-demo", 60, load_once)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        results = list(executor.map(lambda _: read_cached(), range(workers)))
+
+    assert calls == 1
+    assert results == [{"items": []}] * workers
+
+    results[0]["items"].append("mutated")
+    assert resources._cache_get_or_load("race-demo", 60, load_once) == {"items": []}
+
+
+def test_cache_get_or_load_shares_loader_exception_and_allows_retry():
+    workers = 4
+    calls = 0
+    calls_lock = threading.Lock()
+    start = threading.Barrier(workers)
+
+    def failing_load():
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        time.sleep(0.05)
+        raise RuntimeError("SAP unavailable")
+
+    def read_cached():
+        start.wait(timeout=2)
+        return resources._cache_get_or_load("error-demo", 60, failing_load)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(read_cached) for _ in range(workers)]
+
+    for future in futures:
+        with pytest.raises(RuntimeError, match="SAP unavailable"):
+            future.result()
+    assert calls == 1
+
+    assert resources._cache_get_or_load("error-demo", 60, lambda: {"ok": True}) == {"ok": True}
+
+
+def test_invalidate_cache_detaches_inflight_load():
+    load_started = threading.Event()
+    release_load = threading.Event()
+
+    def slow_load():
+        load_started.set()
+        assert release_load.wait(timeout=2)
+        return {"version": 1}
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first_load = executor.submit(resources._cache_get_or_load, "invalidate-demo", 60, slow_load)
+        assert load_started.wait(timeout=2)
+        assert resources.invalidate_cache("invalidate-demo") == 0
+        release_load.set()
+        assert first_load.result() == {"version": 1}
+
+    assert resources._cache_get_or_load("invalidate-demo", 60, lambda: {"version": 2}) == {"version": 2}
 
 
 def test_system_info_is_sanitized_and_cached(monkeypatch):

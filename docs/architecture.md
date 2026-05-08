@@ -95,6 +95,14 @@ destination/{name}/...
 
 Esto evita mezclar metadatos de DEV/QAS/PRD.
 
+La cache es thread-safe:
+
+- `_CACHE_LOCK` protege solo metadatos de cache/in-flight; no se mantiene durante llamadas RFC lentas.
+- `_INFLIGHT_LOADS` aplica patrón **single-flight por clave**: si varios threads piden simultáneamente el mismo resource en miss/TTL expirado, solo uno ejecuta el `loader()` y el resto espera ese resultado.
+- Las cargas de claves distintas pueden avanzar en paralelo.
+- `invalidate_cache()` limpia entradas materializadas y desacopla cargas en curso para que nuevas peticiones no esperen un load anterior a la invalidación.
+- Los valores se devuelven con `copy.deepcopy()` para evitar que un caller mutile el objeto cacheado compartido.
+
 TTL principales:
 
 | Resource | TTL |

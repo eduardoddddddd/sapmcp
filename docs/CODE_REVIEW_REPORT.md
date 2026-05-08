@@ -86,8 +86,9 @@ usr02_rows = _read_table(sap, "USR02", [...], [f"BNAME = '{username}'"], ...)  #
 
 ### 3.2 Race Condition en Cache — resources.py
 
-**Severidad**: 🔴 CRÍTICO
-**Ubicación**: `resources.py:49-52`
+**Severidad original**: 🔴 CRÍTICO
+**Estado**: ✅ RESUELTO — 2026-05-08
+**Ubicación original**: `resources.py:49-52`
 
 ```python
 def _cache_get_or_load(key: str, ttl_seconds: float | None, loader: Callable[[], T]) -> T:
@@ -109,7 +110,9 @@ def _cache_get_or_load(key: str, ttl_seconds: float | None, loader: Callable[[],
 
 **Escenario**: Múltiples threads simultáneamente experimentan cache miss → todos llaman `loader()` concurrently.
 
-**Recomendación**: Implementar double-checked locking pattern.
+**Fix aplicado**: `resources.py` mantiene `_INFLIGHT_LOADS` con `concurrent.futures.Future` por clave. En miss/TTL expirado, el primer thread registra el future y ejecuta `loader()` fuera del lock global; callers concurrentes de la misma clave esperan `future.result()`. Las claves distintas pueden cargar en paralelo. Si el loader falla, se propaga la misma excepción a los waiters y se permite reintento posterior. La invalidación desacopla cargas in-flight para que nuevas peticiones no esperen un load anterior.
+
+**Regresión**: `tests/test_resources.py` cubre deduplicación concurrente de misses y propagación/reintento tras excepción.
 
 ---
 

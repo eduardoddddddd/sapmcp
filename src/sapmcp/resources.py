@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import threading
 import time
@@ -15,6 +16,7 @@ T = TypeVar("T")
 
 CacheValue = tuple[Any, float | None]
 _CACHE: dict[str, CacheValue] = {}
+_INFLIGHT_LOADS: dict[str, concurrent.futures.Future[Any]] = {}
 _CACHE_LOCK = threading.Lock()
 
 TTL_SYSTEM_INFO = 60
@@ -25,19 +27,33 @@ TTL_INFINITE: float | None = None
 
 
 def invalidate_cache(prefix: str | None = None) -> int:
-    """Clear all resource cache entries, or only entries whose key starts with prefix."""
+    """Clear all resource cache entries, or only entries whose key starts with prefix.
+
+    In-flight loads are also detached from the single-flight registry so requests that
+    arrive after invalidation do not wait on a stale load.
+    """
     with _CACHE_LOCK:
         if prefix is None:
             count = len(_CACHE)
             _CACHE.clear()
+            _INFLIGHT_LOADS.clear()
             return count
         keys = [key for key in _CACHE if key.startswith(prefix) or f"/{prefix}" in key]
         for key in keys:
             del _CACHE[key]
+        inflight_keys = [key for key in _INFLIGHT_LOADS if key.startswith(prefix) or f"/{prefix}" in key]
+        for key in inflight_keys:
+            del _INFLIGHT_LOADS[key]
         return len(keys)
 
 
 def _cache_get_or_load(key: str, ttl_seconds: float | None, loader: Callable[[], T]) -> T:
+    """Return cached value or run one loader per key while concurrent callers wait.
+
+    This is intentionally a per-key single-flight cache: the global lock protects
+    cache metadata only; slow SAP/RFC work runs outside the lock so unrelated keys
+    can load in parallel while duplicate misses for the same key are deduplicated.
+    """
     now = time.monotonic()
     with _CACHE_LOCK:
         cached = _CACHE.get(key)
@@ -47,11 +63,34 @@ def _cache_get_or_load(key: str, ttl_seconds: float | None, loader: Callable[[],
                 return copy.deepcopy(value)
             del _CACHE[key]
 
-    value = loader()
-    expires_at = None if ttl_seconds is None else now + ttl_seconds
+        inflight = _INFLIGHT_LOADS.get(key)
+        if inflight is None:
+            inflight = concurrent.futures.Future()
+            _INFLIGHT_LOADS[key] = inflight
+            is_loader = True
+        else:
+            is_loader = False
+
+    if not is_loader:
+        return copy.deepcopy(inflight.result())
+
+    try:
+        value = loader()
+    except BaseException as exc:
+        with _CACHE_LOCK:
+            if _INFLIGHT_LOADS.get(key) is inflight:
+                del _INFLIGHT_LOADS[key]
+        inflight.set_exception(exc)
+        raise
+
+    expires_at = None if ttl_seconds is None else time.monotonic() + ttl_seconds
+    cached_value = copy.deepcopy(value)
     with _CACHE_LOCK:
-        _CACHE[key] = (copy.deepcopy(value), expires_at)
-    return copy.deepcopy(value)
+        if _INFLIGHT_LOADS.get(key) is inflight:
+            _CACHE[key] = (cached_value, expires_at)
+            del _INFLIGHT_LOADS[key]
+    inflight.set_result(cached_value)
+    return copy.deepcopy(cached_value)
 
 
 def _policy() -> SafetyPolicy:

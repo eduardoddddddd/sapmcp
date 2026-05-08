@@ -471,6 +471,8 @@ Recomendación enterprise: usar `RFC_READ_TABLE` solo en DEV/QAS controlado; en 
 
 Resources cacheables. Admiten URI legacy y URI con destino.
 
+La cache es in-memory y thread-safe: usa single-flight por clave para que, ante misses concurrentes del mismo resource, solo una llamada SAP/RFC cargue el dato y el resto de callers reutilice ese resultado.
+
 | URI | TTL | Uso |
 | --- | ---: | --- |
 | `sap://destinations` | infinito | Lista destinos configurados, sin contraseñas ni rutas SDK. |

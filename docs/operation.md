@@ -709,7 +709,13 @@ SAPMCP_HC_WP_STOPPED_CRIT=1
 
 ## 12. Resources y cache
 
-El cache es en memoria del proceso.
+El cache es en memoria del proceso y usa deduplicación **single-flight por clave**. Ante múltiples lecturas simultáneas del mismo resource no cacheado o expirado, un solo thread ejecuta la llamada SAP/RFC y los demás esperan el mismo resultado. Esto evita ráfagas duplicadas contra SAP sin bloquear resources de claves distintas.
+
+Notas operativas:
+
+- Los TTLs se aplican desde el fin de la carga exitosa.
+- Si el loader falla, todos los callers concurrentes reciben la misma excepción y la clave queda disponible para reintento.
+- La invalidación manual limpia entradas cacheadas y desacopla cargas en curso; peticiones posteriores vuelven a cargar.
 
 Invalidar todo:
 
