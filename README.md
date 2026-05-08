@@ -20,6 +20,7 @@ El proyecto está pensado para trabajo Basis/DevOps diario: conexión multi-sist
 - [Configurar usuarios y contraseñas](#configurar-usuarios-y-contraseñas)
 - [Seguridad y modo lectura](#seguridad-y-modo-lectura)
 - [Seguridad con LLMs locales](#seguridad-con-llms-locales)
+- [Enterprise / piloto cliente](#enterprise--piloto-cliente)
 - [Herramientas MCP](#herramientas-mcp)
 - [Resources MCP](#resources-mcp)
 - [Prompts MCP](#prompts-mcp)
@@ -399,6 +400,24 @@ La recomendación general es clara: aunque `sapmcp` opere en modo lectura, los d
 
 ---
 
+## Enterprise / piloto cliente
+
+El Sprint 2 añade documentación y estructura para presentar `sapmcp` a SAP Basis, Security, arquitectura y dirección sin cambiar la lógica crítica del servidor:
+
+| Documento / artefacto | Uso |
+| --- | --- |
+| [`docs/matriz-autorizaciones-sap.md`](docs/matriz-autorizaciones-sap.md) | Matriz por RFC/BAPI con riesgo, objeto de autorización probable y recomendación DEV/QAS/PRD. |
+| [`docs/rol-pfcg-recomendado.md`](docs/rol-pfcg-recomendado.md) | Estrategia de roles `Z_SAPMCP_READ_DEV`, `Z_SAPMCP_READ_QAS` y `Z_SAPMCP_READ_PRD`. |
+| [`docs/politica-destinos.md`](docs/politica-destinos.md) | Modelo recomendado de política por destino y convención futura de variables. |
+| [`docs/gobierno-llm-sap.md`](docs/gobierno-llm-sap.md) | Gobierno LLM, compliance, trazabilidad, aprobación humana y prompt injection. |
+| [`docs/matriz-compatibilidad.md`](docs/matriz-compatibilidad.md) | Estado validado/esperado/pendiente por plataforma SAP. |
+| [`sap_zrfc/README.md`](sap_zrfc/README.md) | Estrategia ABAP companion para Z-RFCs read-only tipadas. |
+| [`docs/docker.md`](docs/docker.md) | Ejecución Docker/demo local sin redistribuir el SAP NetWeaver RFC SDK. |
+
+Recomendación enterprise: usar `RFC_READ_TABLE` solo en DEV/QAS controlado; en PRD preferir RFCs estándar certificadas o Z-RFCs read-only revisadas por ABAP/Security, con roles PFCG mínimos y auditoría.
+
+---
+
 ## Herramientas MCP
 
 ### Sistema y configuración
@@ -639,6 +658,13 @@ Si el cliente no carga variables de entorno del shell, define `env` explícito o
 - [`docs/architecture.md`](docs/architecture.md) — arquitectura técnica.
 - [`docs/ejemplos-prompts.md`](docs/ejemplos-prompts.md) — ejemplos oficiales de prompts para demos con Claude/Codex y otros hosts MCP.
 - [`docs/seguridad-y-modelos-locales.md`](docs/seguridad-y-modelos-locales.md) — seguridad operativa y recomendaciones de modelos locales para sapmcp.
+- [`docs/matriz-autorizaciones-sap.md`](docs/matriz-autorizaciones-sap.md) — matriz enterprise de RFC/BAPI, riesgos y autorizaciones SAP probables.
+- [`docs/rol-pfcg-recomendado.md`](docs/rol-pfcg-recomendado.md) — propuesta de roles PFCG por entorno y proceso de construcción con trazas.
+- [`docs/politica-destinos.md`](docs/politica-destinos.md) — modelo recomendado DEV/QAS/PRD y convención futura de políticas por destino.
+- [`docs/gobierno-llm-sap.md`](docs/gobierno-llm-sap.md) — gobierno LLM, AI compliance, trazabilidad y mitigación de prompt injection.
+- [`docs/matriz-compatibilidad.md`](docs/matriz-compatibilidad.md) — compatibilidad validada/esperada/pendiente por plataforma SAP.
+- [`docs/docker.md`](docs/docker.md) — Docker/demo local con SDK SAP montado externamente.
+- [`sap_zrfc/README.md`](sap_zrfc/README.md) — estrategia y plantillas ABAP companion para Z-RFCs read-only.
 - [`docs/sapmcp-abap-docker-validation-2026-05-06.md`](docs/sapmcp-abap-docker-validation-2026-05-06.md) — validación contra ABAP Docker.
 - [`docs/sapmcp-abap-docker-validation-fase8-20260506.md`](docs/sapmcp-abap-docker-validation-fase8-20260506.md) — validación ampliada de multi-destination, Basis, health check, SafetyPolicy y snapshot.
 

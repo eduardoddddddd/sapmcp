@@ -1,0 +1,21 @@
+services:
+  sapmcp:
+    build:
+      context: .
+    image: sapmcp:local
+    env_file:
+      - .env.docker
+    environment:
+      SAP_NWRFC_LIB_DIR: /opt/sap/nwrfcsdk/lib
+      LD_LIBRARY_PATH: /opt/sap/nwrfcsdk/lib
+      SAPMCP_READ_ONLY: "true"
+      SAPMCP_ALLOW_DANGEROUS: "false"
+    volumes:
+      # Must point to an authorized Linux x86_64 SAP NetWeaver RFC SDK lib directory on the host.
+      - ${SAP_NWRFC_SDK_LIB_DIR_HOST:-/opt/sap/nwrfcsdk/lib}:/opt/sap/nwrfcsdk/lib:ro
+      - sapmcp-audit:/home/sapmcp/.sapmcp
+    stdin_open: true
+    tty: true
+
+volumes:
+  sapmcp-audit:
