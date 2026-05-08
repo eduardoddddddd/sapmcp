@@ -1,5 +1,6 @@
 # sapmcp
 
+[![SafeSkill 50/100](https://img.shields.io/badge/SafeSkill-50%2F100_Use%20with%20Caution-orange)](https://safeskill.dev/scan/eduardoddddddd-sapmcp)
 **sapmcp** es un servidor MCP para operar y consultar sistemas **SAP ECC / SAP S/4HANA** mediante **SAP NetWeaver RFC SDK**, sin `pyrfc`, exponiendo tools, resources y prompts seguros para clientes LLM como Codex, Claude Desktop u otros hosts compatibles con MCP.
 
 El proyecto está pensado para trabajo Basis/DevOps diario: conexión multi-sistema, llamadas RFC controladas, health checks, auditoría JSONL, resources cacheables y playbooks de operación en castellano.
