@@ -1,5 +1,7 @@
 # sapmcp
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/eduardoddddddd/sapmcp)
+
 **sapmcp** es un servidor MCP para operar y consultar sistemas **SAP ECC / SAP S/4HANA** mediante **SAP NetWeaver RFC SDK**, sin `pyrfc`, exponiendo tools, resources y prompts seguros para clientes LLM como Codex, Claude Desktop u otros hosts compatibles con MCP.
 
 El proyecto está pensado para trabajo Basis/DevOps diario: conexión multi-sistema, llamadas RFC controladas, health checks, auditoría JSONL, resources cacheables y playbooks de operación en castellano.
