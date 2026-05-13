@@ -46,7 +46,7 @@ def _uc_buffer(text: str | None = None, *, size: int | None = None):
     encoded = ("" if text is None else str(text)).encode("utf-16-le")
     values = [int.from_bytes(encoded[index : index + 2], "little") for index in range(0, len(encoded), 2)]
     values.append(0)
-    return (SAP_UC * len(values))(*values)
+    return (SAP_UC * len(values))(*values)  # type: ignore[misc]
 
 
 def _uc_ptr(text: str):

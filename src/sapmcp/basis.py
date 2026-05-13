@@ -387,9 +387,9 @@ def sap_get_update_requests(status: str | None = None, user: str | None = None, 
         }
         requests.append(item)
     if wanted:
-        requests = [row for row in requests if row["status"].upper() == wanted]
+        requests = [row for row in requests if str(row["status"]).upper() == wanted]
     if username:
-        requests = [row for row in requests if row["usuario"].upper() == username]
+        requests = [row for row in requests if str(row["usuario"]).upper() == username]
     return {"available": True, "destination": _destination_name(destination), "requests": requests, "count": len(requests)}
 
 
@@ -514,7 +514,7 @@ def sap_get_jobs(top_n: int = 50, status: str | None = None, since_days: int = 1
         }
         jobs.append(item)
     if wanted:
-        jobs = [job for job in jobs if job["status"].upper() == wanted]
+        jobs = [job for job in jobs if str(job["status"]).upper() == wanted]
     jobs.sort(key=lambda job: (job.get("start", ""), job.get("jobname", "")), reverse=True)
     top = max(0, int(top_n))
     return {"available": True, "destination": _destination_name(destination), "source": source, "since": since, "jobs": jobs[:top], "count": len(jobs[:top])}

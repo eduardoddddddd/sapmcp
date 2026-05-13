@@ -38,7 +38,7 @@ class Threshold:
 
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
-    if raw in (None, ""):
+    if not raw:
         return default
     try:
         return int(raw)

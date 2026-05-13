@@ -245,8 +245,10 @@ def normalize_delimiter(delimiter: Any) -> str:
 
 def normalize_non_negative_int(value: Any, *, name: str, default: int | None = None, max_value: int | None = None) -> int:
     raw = default if value is None else value
+    if raw is None:
+        raise ValueError(f"{name} no puede ser None sin valor por defecto")
     try:
-        number = int(raw)
+        number = int(str(raw))
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} debe ser entero") from exc
     if number < 0:

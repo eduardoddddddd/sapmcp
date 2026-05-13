@@ -2,13 +2,21 @@ from __future__ import annotations
 
 import os
 import platform
+from typing import IO
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
 try:
     from dotenv import load_dotenv
 except ModuleNotFoundError:  # permite tests/uso básico antes de instalar dependencias
-    def load_dotenv(*args, **kwargs):
+    def load_dotenv(
+        dotenv_path: str | os.PathLike[str] | None = None,
+        stream: IO[str] | None = None,
+        verbose: bool = False,
+        override: bool = False,
+        interpolate: bool = True,
+        encoding: str | None = "utf-8"
+    ) -> bool:
         return False
 
 load_dotenv()
@@ -140,7 +148,7 @@ class SapConnectionConfig:
     def _from_classic_env(cls) -> "SapConnectionConfig":
         # SAP SDK parameter names. We accept common aliases for convenience.
         user = os.getenv("SAP_USER")
-        mapping = {
+        mapping: dict[str, str | None] = {
             "ASHOST": os.getenv("SAP_ASHOST") or os.getenv("SAP_HOST"),
             "SYSNR": os.getenv("SAP_SYSNR"),
             "CLIENT": os.getenv("SAP_CLIENT"),
@@ -159,7 +167,7 @@ class SapConnectionConfig:
             "SNC_PARTNERNAME": os.getenv("SAP_SNC_PARTNERNAME"),
             "SNC_MODE": os.getenv("SAP_SNC_MODE"),
         }
-        params = {key: value for key, value in mapping.items() if value not in (None, "")}
+        params: dict[str, str] = {key: value for key, value in mapping.items() if value}
         return cls(
             params=params,
             nwrfc_lib_dir=os.getenv("SAP_NWRFC_LIB_DIR") or None,
@@ -170,7 +178,7 @@ class SapConnectionConfig:
     @classmethod
     def _from_named_destination(cls, destination: str) -> "SapConnectionConfig":
         user = _destination_env(destination, "USER")
-        mapping = {
+        mapping: dict[str, str | None] = {
             "ASHOST": _destination_env(destination, "ASHOST") or _destination_env(destination, "HOST"),
             "SYSNR": _destination_env(destination, "SYSNR"),
             "CLIENT": _destination_env(destination, "CLIENT"),
@@ -189,7 +197,7 @@ class SapConnectionConfig:
             "SNC_PARTNERNAME": _destination_env(destination, "SNC_PARTNERNAME"),
             "SNC_MODE": _destination_env(destination, "SNC_MODE"),
         }
-        params = {key: value for key, value in mapping.items() if value not in (None, "")}
+        params: dict[str, str] = {key: value for key, value in mapping.items() if value}
         return cls(
             params=params,
             nwrfc_lib_dir=os.getenv("SAP_NWRFC_LIB_DIR") or None,
