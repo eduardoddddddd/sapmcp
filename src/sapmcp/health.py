@@ -306,15 +306,17 @@ def _check_plan(profile: HealthProfile, destination: str | None, thresholds: dic
 
 
 def _global_verdict(checks: list[dict[str, Any]]) -> Literal["ok", "warn", "crit", "unknown"]:
-    statuses = [str(check.get("status", "unknown")) for check in checks]
-    if statuses and all(status == "unknown" for status in statuses):
-        return "unknown"
-    if "crit" in statuses:
+    if not checks:
+        return "ok"
+
+    unique_statuses = {str(check.get("status", "unknown")) for check in checks}
+
+    if "crit" in unique_statuses:
         return "crit"
-    if "warn" in statuses:
+    if "warn" in unique_statuses:
         return "warn"
-    if any(status == "unknown" for status in statuses):
-        return "warn"
+    if "unknown" in unique_statuses:
+        return "unknown" if len(unique_statuses) == 1 else "warn"
     return "ok"
 
 
