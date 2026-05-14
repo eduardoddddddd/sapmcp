@@ -65,6 +65,7 @@ La seguridad no depende de que el LLM "se porte bien". El diseño de `sapmcp` a�
 7. **Auditoría JSONL sin contraseñas.**
 8. **Configuración multi-destination explícita.**
 9. **Redacción de secretos en configuración y logs.**
+10. **Soporte para carga de contraseñas desde archivos (`_FILE`).**
 
 ---
 
@@ -168,7 +169,7 @@ El usuario SAP usado por `sapmcp` debe seguir principio de mínimo privilegio.
 - Acceso DDIC/tablas solo a lo necesario.
 - Sin permisos de cambio en negocio.
 - Sin `SAP_ALL` ni `SAP_NEW`.
-- Password gestionado por keyring, vault o variables seguras.
+- Password gestionado por keyring, archivos de secretos (`SAP_PASS_FILE`) o variables seguras.
 - Auditoría activa en SAP y en `sapmcp`.
 
 ### No recomendado

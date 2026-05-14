@@ -314,14 +314,27 @@ Permisos típicos a coordinar con Basis/Security:
 - Permisos XBP para `BAPI_XBP_JOB_SELECT` si se usan jobs.
 - Permisos de administración/monitorización necesarios para `TH_*`, syslog, enqueue, dumps, updates, según release y política.
 
-### Opción 1: passwords en `.env`
+### Opción 1: passwords en `.env` (menos seguro)
 
 ```env
 SAP_DEV_USER=RFC_SAPMCP_DEV
 SAP_DEV_PASS=********
 ```
 
-### Opción 2: keyring local
+### Opción 2: archivos de secretos (recomendado para Docker/K8s)
+
+Puedes indicar la ruta a un archivo que contenga la contraseña. Esto evita exponer el secreto en el entorno del proceso.
+
+```env
+SAP_USER=RFC_USER
+SAP_PASS_FILE=/run/secrets/sap_pass
+
+# Para destinos nombrados
+SAP_DEV_USER=RFC_DEV
+SAP_DEV_PASS_FILE=/home/user/.sap_dev_pass
+```
+
+### Opción 3: keyring local
 
 Instala el extra:
 

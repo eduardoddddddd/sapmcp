@@ -81,6 +81,18 @@ def _destination_env(prefix: str, suffix: str) -> str | None:
     return _env_first(f"SAP_{prefix}_{suffix}", f"SAP_{prefix.upper()}_{suffix}")
 
 
+def _read_secret_from_file(path: str | None) -> str | None:
+    if not path:
+        return None
+    try:
+        p = Path(path).expanduser()
+        if p.exists():
+            return p.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    return None
+
+
 def _sap_password(user: str | None, *, destination: str = DEFAULT_DESTINATION_NAME) -> str | None:
     if _env_bool("SAPMCP_USE_KEYRING", False):
         if not user:
@@ -98,7 +110,12 @@ def _sap_password(user: str | None, *, destination: str = DEFAULT_DESTINATION_NA
             keyring_user = f"{destination}:{user}" if destination != DEFAULT_DESTINATION_NAME else user
             raise RuntimeError(f"No hay password en keyring para service='sapmcp' user='{keyring_user}'")
         return password
-    return os.getenv("SAP_PASS") or os.getenv("SAP_PASSWD") or os.getenv("SAP_PASSWORD")
+    return (
+        _read_secret_from_file(os.getenv("SAP_PASS_FILE") or os.getenv("SAP_PASSWD_FILE") or os.getenv("SAP_PASSWORD_FILE"))
+        or os.getenv("SAP_PASS")
+        or os.getenv("SAP_PASSWD")
+        or os.getenv("SAP_PASSWORD")
+    )
 
 
 def _sap_destination_password(destination: str, user: str | None) -> str | None:
@@ -113,7 +130,14 @@ def _sap_destination_password(destination: str, user: str | None) -> str | None:
         if not password:
             raise RuntimeError(f"No hay password en keyring para service='sapmcp' user='{destination}:{user}'")
         return password
-    return _destination_env(destination, "PASS") or _destination_env(destination, "PASSWD") or _destination_env(destination, "PASSWORD")
+    return (
+        _read_secret_from_file(
+            _destination_env(destination, "PASS_FILE") or _destination_env(destination, "PASSWD_FILE") or _destination_env(destination, "PASSWORD_FILE")
+        )
+        or _destination_env(destination, "PASS")
+        or _destination_env(destination, "PASSWD")
+        or _destination_env(destination, "PASSWORD")
+    )
 
 
 @dataclass(frozen=True)
