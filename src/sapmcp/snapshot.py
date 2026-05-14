@@ -51,7 +51,7 @@ def find_snapshot_path(sid: str | None = None) -> Path | None:
         if preferred.exists():
             return preferred
     except Exception:
-        pass
+        logger.debug("Failed to determine preferred snapshot path", exc_info=True)
     candidates = sorted(sapmcp_home().glob("catalog-*.json.gz"), key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0] if candidates else None
 
