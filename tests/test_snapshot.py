@@ -78,3 +78,21 @@ def test_snapshot_writes_expected_schema_and_searches_offline(monkeypatch, tmp_p
     assert resource["exists"] is True
     assert resource["sid"] == "D01"
     assert resource["rfc"][0]["FUNCNAME"] == "BAPI_USER_GET_DETAIL"
+
+
+def test_find_snapshot_path_fallback_on_exception(monkeypatch, tmp_path):
+    monkeypatch.setenv("SAPMCP_HOME", str(tmp_path))
+
+    # Create a candidate snapshot file
+    candidate_path = tmp_path / "catalog-OTHER.json.gz"
+    candidate_path.touch()
+
+    # Mock snapshot_path to raise an exception
+    def mock_snapshot_path(*args, **kwargs):
+        raise RuntimeError("Preferred path error")
+
+    monkeypatch.setattr(snapshot, "snapshot_path", mock_snapshot_path)
+
+    # find_snapshot_path should catch the exception and return the candidate
+    result = snapshot.find_snapshot_path()
+    assert result == candidate_path
